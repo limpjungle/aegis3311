@@ -1,5 +1,7 @@
 # Матрица автономности
 
+> Матрица исполняется как политика OPA/Rego: [`policy/aegis/autonomy/matrix.rego`](../../policy/aegis/autonomy/matrix.rego). Тест `TestMatrixMatchesArchitectureDoc` сверяет её с таблицей §4.4 в architecture.md.
+
 > Выдержка из [architecture.md](../00-overview/architecture.md) §4.3–4.4. Источник истины — исходный документ: правки вносить туда, затем синхронизировать этот файл.
 
 ## 4.3 Классы обратимости

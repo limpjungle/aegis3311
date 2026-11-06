@@ -1,0 +1,37 @@
+{
+ "schema": "aegisops/pep-verdict/v1",
+ "mode": "dry-run",
+ "decision": "deny",
+ "action": {
+  "type": "workload.restart",
+  "version": "1.0.0",
+  "reversibility": "R2",
+  "params": {
+   "scope": "pod",
+   "pod_name": "nope",
+   "reason": null,
+   "parameter": null
+  },
+  "computed": {}
+ },
+ "target": {
+  "kind": "core/Pod",
+  "namespace": "shop",
+  "environment": "staging"
+ },
+ "requested_level": "L3",
+ "ceiling": "L3",
+ "effective_level": "L0",
+ "reasons": [
+  {
+   "code": "pod_not_found",
+   "source": "catalog",
+   "effect": "deny",
+   "detail": "значение \"nope\" параметра pod_name вне допустимых"
+  }
+ ],
+ "catalog_digest": "<digest>",
+ "policy_bundle_digest": "<digest>",
+ "policy_revision": "0.1.0",
+ "input_digest": "<digest>"
+}

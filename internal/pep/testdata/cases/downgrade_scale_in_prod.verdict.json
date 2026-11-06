@@ -1,0 +1,40 @@
+{
+ "schema": "aegisops/pep-verdict/v1",
+ "mode": "dry-run",
+ "decision": "downgrade",
+ "action": {
+  "type": "workload.scale_in",
+  "version": "1.0.0",
+  "reversibility": "R2",
+  "params": {
+   "scope": null,
+   "pod_name": null,
+   "reason": null,
+   "parameter": null
+  },
+  "computed": {
+   "new_min_replicas": 3
+  }
+ },
+ "target": {
+  "kind": "autoscaling/HorizontalPodAutoscaler",
+  "namespace": "shop",
+  "environment": "prod-cloud-hybrid"
+ },
+ "requested_level": "L3",
+ "ceiling": "L2",
+ "effective_level": "L2",
+ "reasons": [
+  {
+   "code": "matrix_ceiling",
+   "source": "policy",
+   "effect": "cap",
+   "level": "L2",
+   "detail": "потолок матрицы L2 ниже запрошенного L3"
+  }
+ ],
+ "catalog_digest": "<digest>",
+ "policy_bundle_digest": "<digest>",
+ "policy_revision": "0.1.0",
+ "input_digest": "<digest>"
+}

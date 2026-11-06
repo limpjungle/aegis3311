@@ -1,0 +1,44 @@
+# Размер пула PgBouncer через reload (docs/03-autonomy/action-catalog.md §2.5).
+name: pgbouncer.resize_pool
+version: 1.0.0
+reversibility: R2
+targets:
+  kinds: [pgbouncer]
+  labels: {aegisops.io/managed: "true"}
+params:
+  database:   # база цели, подставляется кодом
+    type: string
+    chosen_by: catalog
+    source: target.service.database
+  new_pool_size:
+    type: int
+    chosen_by: catalog
+    bounds:
+      rule: pgbouncer.resize_pool.bounds.v1
+      minimum: 5
+      # шаг не более +50% (предложение); запас headroom — 10% max_connections (предложение)
+      maximum: "min(ceil(snapshot.pool_size * 1.5), postgres.max_connections - postgres.superuser_reserved_connections - sum(other_pools.pool_size) - headroom)"
+step:
+  # +25%, минимум +1 (предложение)
+  - {param: new_pool_size, rule: pgbouncer.resize_pool.v1, expr: "min(maximum, max(snapshot.pool_size + 1, ceil(snapshot.pool_size * 1.25)))"}
+preconditions:
+  - {id: diagnosis.confirmed, description: "диагноз подтверждён: cl_waiting > 0 и maxwait выше порога в SHOW POOLS"}
+  - {id: cause.not_leak, description: "причина не в утечке: доля сессий idle in transaction дольше 60 с ниже порога (иначе — L1-карточка и PR с исправлением)"}
+  - {id: db.not_degrading, description: "СУБД не деградирует: p95 длительности запросов за последние 5 минут не выше 3 × baseline (метрика недоступна — предусловие не выполнено, fail-closed)"}
+  - {id: pools.sum_within_max, description: "сумма пулов после изменения не превышает max_connections с запасом"}
+postconditions:
+  window: 10m
+  checks:
+    - {id: waiting.below_threshold, description: "cl_waiting и maxwait вернулись ниже порога"}
+    - {id: pg.connections_headroom, description: "число активных соединений к PostgreSQL ниже max_connections − headroom"}
+    - {id: clients.connect_errors_stable, description: "error rate клиентов по ошибкам подключения не вырос"}
+rollback:
+  action: pgbouncer.resize_pool
+  params: {new_pool_size: snapshot.pool_size}
+execution: gitops   # конфиг PgBouncer в Git; reload выполняет оператор конфигурации
+rate_limit: {per_target_per_hour: 2, cooldown: 15m}
+blast_radius: {targets_per_call: 1}
+lease: required   # lease на экземпляр PgBouncer и на кластер PostgreSQL
+error_budget_exhausted: frozen
+degraded_mode: forbidden
+snapshot: [pool_size, show_pools, pg_connections_by_state, pg_query_duration_p95_vs_baseline]

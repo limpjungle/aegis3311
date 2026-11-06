@@ -1,0 +1,35 @@
+# Уменьшение реплик (docs/03-autonomy/action-catalog.md §2.3).
+name: workload.scale_in
+version: 1.0.0
+reversibility: R2
+targets: {same_as: workload.scale_out}
+params:
+  new_min_replicas:
+    type: int
+    chosen_by: catalog
+    bounds:
+      rule: workload.scale_in.bounds.v1
+      minimum: "max(target.declared_min_replicas, ceil(target.current_min * 0.5))"   # не ниже значения из Git (предложение)
+      maximum: "target.current_min - 1"
+step:
+  # −25%, минимум −1 (предложение)
+  - {param: new_min_replicas, rule: workload.scale_in.v1, expr: "max(minimum, min(target.current_min - 1, floor(target.current_min * 0.75)))"}
+preconditions:
+  - {id: load.below_threshold, description: "загрузка за последние 30 минут ниже порога, заданного политикой сервиса"}
+  - {id: pdb.respected, description: "PodDisruptionBudget не будет нарушен"}
+  - {id: cooldown.no_scale_out, description: "нет scale_out по той же цели в cooldown-окне (защита от flapping)"}
+postconditions:
+  window: 15m
+  checks:
+    - {id: slo.burn_rate_stable, description: "SLO burn rate не вырос"}
+    - {id: saturation.below_threshold, description: "насыщение остаётся ниже порога"}
+rollback:
+  action: workload.scale_out
+  params: {new_min_replicas: snapshot.min_replicas}
+execution: api
+rate_limit: {per_target_per_hour: 2, cooldown: 30m}
+blast_radius: {targets_per_call: 1}
+lease: required
+error_budget_exhausted: frozen
+degraded_mode: forbidden
+snapshot: [min_replicas, ready_replicas, load_30m]

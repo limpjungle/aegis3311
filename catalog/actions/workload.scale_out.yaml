@@ -1,0 +1,37 @@
+# Увеличение реплик stateless (docs/03-autonomy/action-catalog.md §2.2).
+name: workload.scale_out
+version: 1.0.0
+reversibility: R1
+targets:
+  kinds: [apps/Deployment, autoscaling/HorizontalPodAutoscaler, keda.sh/ScaledObject]
+  labels: {aegisops.io/stateless: "true"}
+params:
+  new_min_replicas:
+    type: int
+    chosen_by: catalog
+    bounds:
+      rule: workload.scale_out.bounds.v1
+      minimum: "target.current_min + 1"
+      maximum: "min(target.max_replicas, ceil(target.current_min * 2))"   # не более чем вдвое за шаг (предложение)
+step:
+  # +50%, минимум +1 (предложение)
+  - {param: new_min_replicas, rule: workload.scale_out.v1, expr: "min(maximum, max(target.current_min + 1, ceil(target.current_min * 1.5)))"}
+preconditions:
+  - {id: target.stateless, description: "цель stateless (метка + отсутствие PVC с ReadWriteOnce)"}
+  - {id: cluster.capacity, description: "в кластере есть capacity или буфер overprovisioning; иначе предупреждение о времени появления ноды"}
+  - {id: cooldown.no_scale_in, description: "нет активного scale_in по той же цели в cooldown-окне"}
+postconditions:
+  window: 5m
+  checks:
+    - {id: ready_replicas.gte_new_min, description: "готовых реплик не меньше new_min_replicas"}
+    - {id: saturation.decreasing, description: "насыщение (CPU или длина очереди), вызвавшее действие, снижается"}
+rollback:
+  action: workload.scale_in
+  params: {new_min_replicas: snapshot.min_replicas}
+execution: api   # поле minReplicas в ignoreDifferences; постоянное изменение — отдельным PR
+rate_limit: {per_target_per_hour: 4, cooldown: 10m}
+blast_radius: {targets_per_call: 1}
+lease: required
+error_budget_exhausted: allowed
+degraded_mode: allowed
+snapshot: [min_replicas, max_replicas, ready_replicas]

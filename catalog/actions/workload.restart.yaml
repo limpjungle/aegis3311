@@ -1,0 +1,35 @@
+# Рестарт пода или Deployment stateless (docs/03-autonomy/action-catalog.md §2.4).
+name: workload.restart
+version: 1.0.0
+reversibility: R2
+targets:
+  kinds: [apps/Deployment, core/Pod]
+  labels: {aegisops.io/stateless: "true"}
+params:
+  scope:
+    type: string
+    enum: [pod, deployment]
+    chosen_by: model
+  pod_name:
+    type: string
+    chosen_by: model
+    required_if: {param: scope, equals: pod}
+    enum_from: target.pods
+preconditions:
+  - {id: cause.not_image, description: "причина не в образе: под не в CrashLoopBackOff после свежего релиза (иначе — rollback, а не рестарт)"}
+  - {id: scope.deployment.ready, description: "scope=deployment: готовых реплик ≥ 2 и PDB допускает недоступность"}
+  - {id: scope.pod.not_last, description: "scope=pod: под не единственная готовая реплика"}
+postconditions:
+  window: 10m
+  checks:
+    - {id: replicas.ready, description: "все реплики Ready, число рестартов не растёт"}
+    - {id: symptom.gone, description: "симптом, вызвавший действие (утечка памяти, зависание), не повторился в окне"}
+rollback:
+  action: none   # рестарт нельзя «откатить»; издержки — прерванные запросы
+execution: api   # rolling restart; аннотация restartedAt в ignoreDifferences
+rate_limit: {per_target_per_hour: 2, cooldown: 30m}
+blast_radius: {max_unavailable: "25%"}   # (предложение)
+lease: required
+error_budget_exhausted: frozen
+degraded_mode: policy   # R2: только если разрешено политикой
+snapshot: [ready_replicas, restart_counts, memory_usage]

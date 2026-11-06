@@ -1,0 +1,34 @@
+# Откат canary (docs/03-autonomy/action-catalog.md §2.1).
+name: rollout.abort_and_rollback
+version: 1.0.0
+reversibility: R1
+targets:
+  kinds: [argoproj.io/Rollout]
+  labels: {aegisops.io/managed: "true"}
+params:
+  reason:
+    type: string
+    enum: [canary_degradation, bake_degradation, insufficient_data_policy]
+    chosen_by: model
+  analysis_run:   # активный AnalysisRun цели, подставляется кодом
+    type: string
+    chosen_by: catalog
+    source: target.rollout.analysis_run
+preconditions:
+  - {id: rollout.active, description: "rollout в состоянии Progressing или в bake-периоде"}
+  - {id: revision.stable_saved, description: "предыдущая стабильная ревизия существует и сохранена"}
+  - {id: gate.degradation, description: "вердикт статистического гейта: значимая деградация (или политика сервиса для «недостаточно данных»)"}
+postconditions:
+  window: 10m   # (предложение)
+  checks:
+    - {id: traffic.stable_100, description: "100% трафика на стабильной ревизии"}
+    - {id: metrics.back_to_baseline, description: "error rate и p99 latency вернулись в пределы baseline (тот же статистический тест)"}
+rollback:
+  action: manual   # повторное продвижение — новый релиз, не откат отката
+execution: api   # нативный abort/undo Argo Rollouts
+rate_limit: {per_target_per_hour: 3, cooldown: 0m}
+blast_radius: {targets_per_call: 1}
+lease: required
+error_budget_exhausted: allowed
+degraded_mode: allowed   # только если runbook предодобрен
+snapshot: [rollout.status, revision_history, analysis_run]

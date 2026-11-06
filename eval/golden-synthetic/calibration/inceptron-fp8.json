@@ -1,0 +1,29 @@
+{
+ "created_at": "2026-11-06T00:32:45Z",
+ "ewma": {},
+ "frozen": null,
+ "points": [],
+ "profile": "inceptron-fp8",
+ "reference": {
+  "file": "refs/inceptron-fp8/probe-v2-20261105-20261105T234706Z-3b8c.jsonl",
+  "hashes": {
+   "config": "3f78d6d5b9274cd86538ab491b38047ada12e0614b65f8903cc9492a2fb3da47",
+   "manifest": "4b0aa4014e94d8337b8d2ccf39cc5780dec000f7185607884446c70ed9651d3c",
+   "prompt": "d1138cc6e4657d379eda003dc8565e395aae294f7070ebf185b4387bbcb3266c",
+   "runner": "1f7cbe7d15a58bbcd931ffb17237e80af977d11ecded7bd580fedb83301a100b",
+   "schema": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850",
+   "set": "97908de7e3962c09997fabc50e3d8e85e338580df625b258e73218e251dcf2f0"
+  },
+  "run_id": "20261105T234706Z-3b8c",
+  "sha256": "1388acee8bc8b12d1af2011da8516d2fdbe8092deffaf7fbeed967c61df36005"
+ },
+ "reference_levels": {
+  "admissible": 99.58,
+  "decision_agreement": 99.583,
+  "harmful": 0.0,
+  "root_cause_match": 99.58,
+  "truncated_share": 0.417
+ },
+ "set_sha256": "97908de7e3962c09997fabc50e3d8e85e338580df625b258e73218e251dcf2f0",
+ "updated_at": "2026-11-06T00:32:45Z"
+}

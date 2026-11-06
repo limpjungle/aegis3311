@@ -1,0 +1,62 @@
+{
+ "kind": "reference",
+ "run_id": "20261105T225334Z-6e05",
+ "profile": "inceptron-fp8",
+ "profile_sha256": "d4a733dca48245f71991e09de92a25e164c00a76c1a68528961ef6ad23dd350d",
+ "endpoint_label": "inceptron/fp8",
+ "model": "z-ai/glm-5.3-flash-20260826",
+ "api_host": "openrouter.ai",
+ "generation": {
+  "temperature": 0,
+  "max_tokens": 4096,
+  "seed": 20261105
+ },
+ "provider_request": {
+  "only": [
+   "inceptron"
+  ],
+  "quantizations": [
+   "fp8"
+  ],
+  "allow_fallbacks": false,
+  "zdr": true,
+  "data_collection": "deny",
+  "require_parameters": true
+ },
+ "set": "probe",
+ "set_file": "data/probe-v1.jsonl",
+ "cases_total": 480,
+ "selected_ids_sha256": "cdafa11da42dd2050315d507a87bb0e415b148894f44abeee3e23ec614c27873",
+ "hashes": {
+  "manifest": "f60a1740d347bed44812a674b4fdf0e3d3e21f57cbfb6b685f8314007d4f17a0",
+  "set": "70f543cd58175a25dbc565552b2c47e54c3354e543a506a3813720744f33d1b6",
+  "prompt": "03fce1dc8a673135f2d0db93ac43f84fe6708b5f4f4aa909481ce7b368cbcda4",
+  "schema": "b150c887cf82ab0c4f7959e6c33725ad958a454f9703962d9337c02b34e2881a",
+  "runner": "1f7cbe7d15a58bbcd931ffb17237e80af977d11ecded7bd580fedb83301a100b",
+  "config": "3f78d6d5b9274cd86538ab491b38047ada12e0614b65f8903cc9492a2fb3da47"
+ },
+ "integrity_bypassed": false,
+ "started_at": "2026-11-05T22:53:34Z",
+ "updated_at": "2026-11-05T23:15:04Z",
+ "finished_at": "2026-11-05T23:15:04Z",
+ "status": "completed",
+ "abort_reason": null,
+ "totals": {
+  "final": 480,
+  "ok": 480,
+  "schema_invalid": 0,
+  "errors_nonfinal": 0,
+  "prompt_tokens": 1414292,
+  "completion_tokens": 593714,
+  "cost_usd": 0.4793151
+ },
+ "providers_seen": {
+  "Inceptron": 480
+ },
+ "estimate_calibration": {
+  "mean_actual_over_estimate": 0.5844
+ },
+ "frozen_at": "2026-11-05T23:15:04Z",
+ "valid_answers": 480,
+ "schema_invalid": 0
+}

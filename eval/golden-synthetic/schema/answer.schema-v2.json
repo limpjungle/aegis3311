@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aegisops/golden-synthetic/answer/v2",
+  "title": "Ответ модели на кейс инцидента (формат v2)",
+  "description": "Модель выбирает действие и дискретные параметры (scope, pod_name, reason, parameter). Величину изменения и параметры-идентификаторы вычисляет детерминированное правило шага каталога. Все поля обязательны; неиспользуемые параметры — null. Совместима со strict-режимом.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["incident_class", "root_cause", "action", "confidence", "evidence", "summary"],
+  "properties": {
+    "incident_class": {
+      "type": "string",
+      "enum": ["RB-001", "RB-002", "RB-003", "RB-004", "RB-005", "RB-006", "RB-007", "other"]
+    },
+    "root_cause": {
+      "type": "string",
+      "enum": [
+        "pool_undersized", "client_tx_leak", "db_slow_queries", "db_connections_exhausted",
+        "release_regression", "canary_insufficient_data", "downstream_db_degradation", "no_user_impact",
+        "load_growth", "queue_backlog", "max_replicas_reached", "transient_spike",
+        "crashloop_after_release", "crashloop_not_release", "memory_leak", "overcapacity", "unknown"
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "params"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "rollout.abort_and_rollback", "workload.scale_out", "workload.scale_in", "workload.restart",
+            "pgbouncer.resize_pool", "postgres.set_restart_param", "recommend", "none"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope", "pod_name", "reason", "parameter"],
+          "properties": {
+            "scope": {"type": ["string", "null"], "enum": ["pod", "deployment", null]},
+            "pod_name": {"type": ["string", "null"]},
+            "reason": {"type": ["string", "null"],
+                       "enum": ["canary_degradation", "bake_degradation", "insufficient_data_policy", null]},
+            "parameter": {"type": ["string", "null"], "enum": ["max_connections", "shared_buffers", null]}
+          }
+        }
+      }
+    },
+    "confidence": {"type": "number"},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"}
+  }
+}

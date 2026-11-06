@@ -21,6 +21,8 @@
 | `data/dev-v2.jsonl` | Отдельный набор для отладки промптов, формат v2 (113 кейсов, другой seed) |
 | `data/probe-v1.jsonl`, `data/dev-v1.jsonl` | Те же кейсы в формате v1 (величину выбирала модель), хранятся для истории |
 | `test_format_v2.py` | Тесты формата v2, правил шага и метрики `decision_agreement` |
+| `calibrate.py` | Калибровка и контроль ежедневной пробы: `update` / `status` / `freeze`, состояние в `calibration/<profile>.json`; коды выхода 0 OK, 10 ALERT, 20 DOWNGRADE |
+| `test_calibrate.py` | Тесты калибровки на синтетических прогонах |
 | `data/manifest.json` | Версии, seed'ы и SHA-256 наборов и промпта |
 
 ## Команды
@@ -41,7 +43,9 @@ python3 run.py --profile inceptron-fp8 --set dev --limit 10           # небо
 python3 run.py --profile inceptron-fp8 --set probe                    # -> runs/<profile>/probe-<run_id>.jsonl (+ .meta.json)
 python3 run.py --profile inceptron-fp8 --set probe --resume runs/inceptron-fp8/probe-<run_id>.jsonl
 python3 run.py --profile inceptron-fp8 --set probe --reference        # эталон -> refs/<profile>/probe-v2-<дата>-<run_id>.jsonl (версия — из файла набора), 0444
-python3 -B -m unittest -v test_format_v2 test_run test_run_audit test_run_fixes  # все тесты (без сети)
+python3 -B calibrate.py update --profile inceptron-fp8                    # точка калибровки по новым прогонам probe
+python3 -B calibrate.py freeze --profile inceptron-fp8                    # заморозить базу (≥ 20 точек, по утверждению)
+python3 -B -m unittest -v test_format_v2 test_calibrate test_run test_run_audit test_run_fixes  # все тесты (без сети)
 ```
 
 Коды выхода: 0 — все кейсы получили окончательный ответ; 2 — отказ (конфиг, целостность, безопасность, нет ключа, файл существует);

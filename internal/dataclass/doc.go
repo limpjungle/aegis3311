@@ -8,6 +8,6 @@
 //   - ExternalAllowed (§4.2): можно ли фрагмент отправить во внешний LLM. Confidential наружу в MVP нельзя
 //     (ConfidentialExternalAvailable = false), restricted — никогда, источники возможных ПДн граждан РФ — никогда.
 //   - Masker и Escalate (§3 п. 4–5): контракт маскировщика; сбой маскировщика и любые найденные ПДн повышают
-//     фрагмент до restricted. Реализация маскировщика — отдельная часть, здесь только интерфейс.
+//     фрагмент до restricted. Реализация — internal/masker, здесь только интерфейс.
 //   - LabelPolicy (§6 «Метки метрик», T-04): allowlist меток метрик и шаблоны их значений.
 package dataclass

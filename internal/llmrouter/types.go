@@ -57,8 +57,22 @@ type Request struct {
 	Sections            []Section
 }
 
-// validate — ошибка вызывающего кода, а не данных: запроса нет.
+// InvalidRequestError — запрос не прошёл проверку структуры: ошибка вызывающего кода, а не отказ системы.
+// Текст совпадает с текстом причины.
+type InvalidRequestError struct{ Err error }
+
+func (e *InvalidRequestError) Error() string { return e.Err.Error() }
+func (e *InvalidRequestError) Unwrap() error { return e.Err }
+
+// validate — ошибка вызывающего кода, а не данных: запроса нет. Ошибка — *InvalidRequestError.
 func (q *Request) validate() error {
+	if err := q.check(); err != nil {
+		return &InvalidRequestError{err}
+	}
+	return nil
+}
+
+func (q *Request) check() error {
 	if !idRe.MatchString(q.IncidentID) {
 		return fmt.Errorf("llmrouter: некорректный incident_id %q", q.IncidentID)
 	}

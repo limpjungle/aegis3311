@@ -16,6 +16,9 @@ import (
 // ErrWriterFailed — Writer остановлен после ошибки записи (fail-closed). Нужна проверка и ручной разбор файла.
 var ErrWriterFailed = errors.New("запись аудита остановлена после ошибки")
 
+// ErrLocked — файл цепочки занят другим писателем (flock).
+var ErrLocked = errors.New("audit: файл цепочки занят другим писателем")
+
 // Writer добавляет decision record'ы и события роутера в файл цепочки (JSONL, только дописывание).
 // Один писатель на файл: при открытии берётся эксклюзивная блокировка (flock).
 type Writer struct {
@@ -46,7 +49,7 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 	}
 	if err := lockFile(f); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("%s: файл занят другим писателем: %w", path, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrLocked, path, err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
 		f.Close()

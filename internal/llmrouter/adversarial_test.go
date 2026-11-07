@@ -16,6 +16,7 @@ import (
 
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 // runtimeMarker — маркер для проверки утечек. Генерируется в рантайме: литералов, похожих на ключи и секреты, в тестах нет.
@@ -341,7 +342,9 @@ func TestBudgetIncidentExhaustedAndClosed(t *testing.T) {
 	if res.Reason != "budget_incident" || !res.DegradeL1 || tr.calls != 1 {
 		t.Fatalf("второй вызов: %+v вызовов=%d", res, tr.calls)
 	}
-	rg.r.CloseIncident("inc-1") // счёт инцидента освобождён
+	if err := rg.r.CloseIncident("inc-1"); err != nil { // счёт инцидента освобождён
+		t.Fatal(err)
+	}
 	res, err = rg.r.Route(ctx, routeReq(t))
 	if err != nil || res.Outcome != "sent" {
 		t.Fatalf("после CloseIncident: %v %+v", err, res)
@@ -350,7 +353,8 @@ func TestBudgetIncidentExhaustedAndClosed(t *testing.T) {
 
 // Параллельные резервы на один инцидент: ровно лимит / размер резерва успешных, остальные отказ.
 func TestBudgetConcurrentReserveExact(t *testing.T) {
-	b := newBudgets(BudgetConfig{IncidentTokens: 10000, ServiceDayTokens: 1 << 40})
+	id := routerstate.Identity{RouterID: "llm-router-test", Primary: "p", Fallback: "f"}
+	b := newBudgets(BudgetConfig{IncidentTokens: 10000, ServiceDayTokens: 1 << 40}, routerstate.NewMemory(id), routerstate.NewState(id))
 	now := func() time.Time { return time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC) }
 	var granted atomic.Int64
 	var wg sync.WaitGroup
@@ -419,7 +423,7 @@ func TestAbortNeverEchoesKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink, clock := &memSink{}, newFakeClock()
-	r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: sink, Clock: clock,
+	r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: sink, Clock: clock, State: routerstate.NewMemory(testIdentity(a)),
 		Budgets: BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, Failover: DefaultFailover(), RouterID: "llm-router-test"})
 	if err != nil {
 		t.Fatal(err)
@@ -898,7 +902,7 @@ func TestCancelDuringRetrySleepKeepsAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: &memSink{}, Clock: newFakeClock(),
+	r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: &memSink{}, Clock: newFakeClock(), State: routerstate.NewMemory(testIdentity(a)),
 		Budgets: BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, Failover: DefaultFailover(), RouterID: "llm-router-test"})
 	if err != nil {
 		t.Fatal(err)

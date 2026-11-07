@@ -15,6 +15,7 @@ import (
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/dataclass"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 type fakeClock struct {
@@ -36,9 +37,12 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // memSink — приёмник событий в памяти с режимом сбоя.
 type memSink struct {
-	mu     sync.Mutex
-	events []audit.RouterEvent
-	failOn string // kind события, на котором запись падает; "*" — на любом
+	mu       sync.Mutex
+	events   []audit.RouterEvent
+	failOn   string // kind события, на котором запись падает; "*" — на любом
+	ids      map[string]bool
+	last     *audit.RouterEvent
+	anchored bool // записан state_created
 }
 
 func (s *memSink) AppendEvent(ev *audit.RouterEvent) (audit.Entry, error) {
@@ -50,8 +54,44 @@ func (s *memSink) AppendEvent(ev *audit.RouterEvent) (audit.Entry, error) {
 	if s.failOn == "*" || s.failOn == ev.Kind {
 		return audit.Entry{}, os.ErrInvalid
 	}
+	if s.ids == nil {
+		s.ids = map[string]bool{}
+	}
+	s.ids[ev.EventID] = true
+	if ev.Kind == "state_created" { // якорь: цепочка непуста, но в списке событий тестов его нет
+		s.anchored = true
+		return audit.Entry{}, nil
+	}
 	s.events = append(s.events, *ev)
+	s.last = ev
 	return audit.Entry{}, nil
+}
+
+func (s *memSink) HasEvent(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ids[id]
+}
+
+func (s *memSink) ChainNonEmpty() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.anchored || len(s.events) > 0
+}
+
+func (s *memSink) LastRouterEvent() (audit.RouterEvent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return audit.RouterEvent{}, false
+	}
+	return *s.last, true
+}
+
+func (s *memSink) RouterEvents() []audit.RouterEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]audit.RouterEvent(nil), s.events...)
 }
 
 func (s *memSink) kinds() []string {
@@ -116,11 +156,17 @@ func testKey(t testing.TB, secret string) openrouter.APIKey {
 	return k
 }
 
+// testIdentity — идентичность хранилища состояния тестового роутера.
+func testIdentity(a *openrouter.Assets) routerstate.Identity {
+	return routerstate.Identity{RouterID: "llm-router-test", Primary: a.Primary.Name, Fallback: a.Fallback.Name}
+}
+
 type rig struct {
 	r      *Router
 	assets *openrouter.Assets
 	sink   *memSink
 	clock  *fakeClock
+	st     *routerstate.MemStore
 }
 
 func newRig(t testing.TB, m dataclass.Masker, tr openrouter.Transport, url string, sink EventSink) *rig {
@@ -140,12 +186,13 @@ func newRig(t testing.TB, m dataclass.Masker, tr openrouter.Transport, url strin
 	} else if s, ok := sink.(*memSink); ok {
 		ms = s
 	}
-	r, err := New(Options{Assets: a, Client: cl, Masker: m, Events: sink, Clock: clock,
+	st := routerstate.NewMemory(testIdentity(a))
+	r, err := New(Options{Assets: a, Client: cl, Masker: m, Events: sink, Clock: clock, State: st,
 		Budgets: BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, Failover: DefaultFailover(), RouterID: "llm-router-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &rig{r: r, assets: a, sink: ms, clock: clock}
+	return &rig{r: r, assets: a, sink: ms, clock: clock, st: st}
 }
 
 func newAuditSigner(t testing.TB) (audit.Signer, audit.Keyring) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/limpjungle/aegis3311/internal/openrouter"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 // Result — итог Route.
@@ -13,7 +14,7 @@ type Result struct {
 	Mode    Mode
 	Outcome string // "sent" | "not_sent"
 	// Reason при not_sent: mode_off | required_excluded | context_ceiling | budget_incident | budget_service_day |
-	// unavailable | halted | canceled.
+	// unavailable | halted | canceled. halted — в том числе остановка из-за хранилища состояния (state_store).
 	Reason    string
 	DegradeL1 bool                   // true при unavailable, halted, budget_*
 	Role      Role                   // endpoint, на который ушёл (или готовился) запрос; "" без Prepared
@@ -41,25 +42,32 @@ func (res *Result) notSent(reason string) {
 }
 
 // selectEndpoint выбирает endpoint с закреплением инцидента. why: "" | "halted" | "unavailable".
-func (r *Router) selectEndpoint(incident string) (role Role, why string) {
+// Ошибка — только ErrAuditFailed (событие остановки не записано); сбой store даёт why="halted".
+func (r *Router) selectEndpoint(incident string) (role Role, why string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.halted {
-		return "", "halted"
+		return "", "halted", nil
 	}
 	role = r.pins[incident]
 	if role == "" || r.eps[role].state != epUp {
 		role = r.active
 	}
 	if role == "" || r.eps[role].state != epUp {
-		return "", "unavailable"
+		return "", "unavailable", nil
 	}
-	r.pins[incident] = role
-	return role, ""
+	if err := r.pinLocked(incident, role); err != nil {
+		if errors.Is(err, routerstate.ErrInvalidOp) { // store исправен, роутер не остановлен: ошибка без причины halted
+			return "", "rejected", err
+		}
+		return "", "halted", softStore(err)
+	}
+	return role, "", nil
 }
 
 // switchTo: после остановки ретраев упавшего endpoint'а — другой up-endpoint, если есть.
-func (r *Router) switchTo(incident string, from Role) (Role, bool) {
+// Ошибка — только ErrAuditFailed при остановке из-за store.
+func (r *Router) switchTo(incident string, from Role) (Role, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	other := RoleFallback
@@ -67,10 +75,33 @@ func (r *Router) switchTo(incident string, from Role) (Role, bool) {
 		other = RolePrimary
 	}
 	if r.eps[from].state == epUp || r.eps[other].state != epUp || r.halted {
-		return "", false
+		return "", false, nil
 	}
-	r.pins[incident] = other
-	return other, true
+	if err := r.pinLocked(incident, other); err != nil {
+		return "", false, softStore(err)
+	}
+	return other, true, nil
+}
+
+// pinLocked закрепляет инцидент за endpoint'ом: сначала в store, потом в памяти. Сбой store останавливает роутер.
+func (r *Router) pinLocked(incident string, role Role) error {
+	if r.pins[incident] == role {
+		return nil
+	}
+	if err := r.o.State.Append(routerstate.Op{Kind: routerstate.OpPin, At: r.stamp(), Incident: incident, Role: string(role)}); err != nil {
+		return r.haltStoreLocked(err)
+	}
+	r.pins[incident] = role
+	return nil
+}
+
+// softStore: сбой хранилища состояния не ошибка вызова — роутер остановлен, следующие Route вернут halted;
+// ошибка остаётся только для ErrAuditFailed.
+func softStore(err error) error {
+	if errors.Is(err, ErrStateStore) {
+		return nil
+	}
+	return err
 }
 
 func errorKindOf(cr *openrouter.CallResult) string {
@@ -105,10 +136,13 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		res.notSent("canceled")
 		return res, nil
 	}
-	role, why := r.selectEndpoint(req.IncidentID)
+	role, why, serr := r.selectEndpoint(req.IncidentID)
+	if why == "rejected" { // закрепление отклонено store: как при отклонённом резерве — без результата (нет причины not_sent)
+		return nil, serr
+	}
 	if why != "" {
 		res.notSent(why)
-		return res, nil
+		return res, serr
 	}
 	set := r.mask(ctx, req)
 	cfg := &r.o.Assets.Config
@@ -139,9 +173,9 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 			Prices: prep.Profile.Prices}
 		var auditErr error
 		cr, callErr := r.o.Client.Call(ctx, prep.Body, bres, reservation, func(a openrouter.Attempt) bool {
-			stop, err := r.onAttempt(ep, a)
+			stop, err := r.onAttempt(ep, bres, a)
 			if err != nil {
-				auditErr = err
+				auditErr = softStore(err) // сбой store: роутер остановлен, разбор итога продолжается
 				return true
 			}
 			return stop
@@ -161,8 +195,25 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		if switched && cr.Attempts > 0 { // резерв получил запрос: запись атрибутируется ему
 			res.Prepared, res.Role, res.Switched = prep, role, true
 		}
+		if serr := bres.storeFailed(); serr != nil { // резерв или расход не записан в store: роутер останавливается
+			r.mu.Lock()
+			herr := r.haltStoreLocked(serr)
+			r.mu.Unlock()
+			if auditErr == nil {
+				auditErr = softStore(herr)
+			}
+		}
 		if auditErr != nil {
-			res.Outcome = "sent"
+			if res.Attempts == 0 && !errors.Is(auditErr, ErrAuditFailed) { // отказ store без единой попытки
+				return nil, auditErr
+			}
+			if res.Attempts == 0 { // запрос не уходил: «sent» и атрибуция отправки недопустимы
+				res.Call, res.Prepared, res.Role, res.ResponseSHA256 = nil, nil, "", ""
+				res.notSent("halted")
+				return res, auditErr
+			}
+			// Запрос уходил, ответа нет: ретраи остановлены сбоем аудита/store, а не исчерпаны (no_response было бы ложью).
+			res.Outcome, res.ErrorKind = "sent", "stopped"
 			return res, auditErr
 		}
 		if res.Attempts == 0 && cr.Kind == openrouter.CallStopped {
@@ -176,7 +227,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		case errors.As(callErr, &ae):
 			res.ErrorKind = ae.Reason
 			if err := r.onAbort(ep, ae); err != nil {
-				return res, err
+				return res, softStore(err)
 			}
 			return res, nil
 		case callErr != nil:
@@ -187,16 +238,27 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 			if res.Attempts == 0 {
 				res.Call, res.Outcome = nil, ""
 				reason := bres.lastDenied()
-				if reason == "" {
+				switch reason {
+				case "":
 					reason = denyIncident
+				case denyStateStore:
+					reason = "halted" // резерв не записан в store; роутер остановлен (state_store)
 				}
 				res.notSent(reason)
 				return res, nil
 			}
 			res.ErrorKind = "budget"
+			if bres.lastDenied() == denyStateStore { // резерв не записан в store: не исчерпание счёта
+				res.ErrorKind = "stopped"
+			}
 		case openrouter.CallStopped:
 			if ctx.Err() == nil && !switched {
-				if next, ok := r.switchTo(req.IncidentID, role); ok {
+				next, ok, serr := r.switchTo(req.IncidentID, role)
+				if serr != nil {
+					res.Outcome, res.ErrorKind = "sent", "stopped"
+					return res, serr
+				}
+				if ok {
 					role, switched = next, true
 					res.Outcome = ""
 					continue
@@ -212,7 +274,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 			res.Parsed = &parsed
 			if parsed.Status == "provider_mismatch" {
 				if err := r.quarantine(ep); err != nil {
-					return res, err
+					return res, softStore(err)
 				}
 			}
 			u := parsed.Usage
@@ -220,7 +282,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 				res.ErrorKind = "context_ceiling_actual"
 				res.Parsed.Answer = nil // как run.py: ответ не принимается
 				if err := r.haltEstimator(); err != nil {
-					return res, err
+					return res, softStore(err)
 				}
 			}
 		}

@@ -20,7 +20,9 @@ var eventIDRe = regexp.MustCompile(`^re-[0-9a-f]{32}$`)
 //
 //	endpoint_down | endpoint_up | endpoint_quarantined — переходы endpoint'а (Endpoint, Role);
 //	active_changed — смена активного endpoint'а (From → To, профиль или "none");
-//	router_halted — роутер остановлен (Reason: auth | estimator | audit_failed);
+//	router_halted — роутер остановлен (Reason: auth | estimator | audit_failed | state_store | state_lost | chain_lost);
+//	state_created — якорь: роутер создал хранилище состояния при пустой цепочке (Reason: store_created;
+//	  From/To — профили primary/fallback); после него цепочка непуста, и потеря хранилища обнаруживается;
 //	router_resumed — остановка снята оператором (Initiator.Kind == human).
 type RouterEvent struct {
 	Schema              string `json:"schema"`
@@ -122,9 +124,19 @@ func (e *RouterEvent) Validate() error {
 		}
 	case "router_halted":
 		switch e.Reason {
-		case "auth", "estimator", "audit_failed":
+		case "auth", "estimator", "audit_failed", "state_store", "state_lost", "chain_lost":
 		default:
 			bad("reason: %q недопустима для router_halted", e.Reason)
+		}
+	case "state_created":
+		if e.Reason != "store_created" {
+			bad("reason: для state_created ожидается store_created, получено %q", e.Reason)
+		}
+		if e.From == "" || e.To == "" || len(e.From) > maxUntrustedBytes || len(e.To) > maxUntrustedBytes {
+			bad("state_created: from и to (профили primary и fallback) обязательны")
+		}
+		if e.Endpoint != "" || e.Role != "" {
+			bad("state_created: endpoint и role пусты")
 		}
 	case "router_resumed":
 		if e.Initiator.Kind != "human" {

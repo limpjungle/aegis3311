@@ -14,6 +14,7 @@ import (
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/dataclass"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 // flakySink — приёмник событий поверх реального *audit.Writer: при failKind событие не пишется и возвращается ошибка.
@@ -40,6 +41,14 @@ func (s *flakySink) AppendEvent(ev *audit.RouterEvent) (audit.Entry, error) {
 	return s.w.AppendEvent(ev)
 }
 
+func (s *flakySink) HasEvent(id string) bool { return s.w.HasEvent(id) }
+
+func (s *flakySink) RouterEvents() []audit.RouterEvent { return s.w.RouterEvents() }
+
+func (s *flakySink) ChainNonEmpty() bool { return s.w.ChainNonEmpty() }
+
+func (s *flakySink) LastRouterEvent() (audit.RouterEvent, bool) { return s.w.LastRouterEvent() }
+
 // writerRig — роутер с реальной цепочкой аудита во временном каталоге.
 type writerRig struct {
 	r     *Router
@@ -65,7 +74,7 @@ func newWriterRig(t *testing.T, m dataclass.Masker, tr *stubTransport, clientOpt
 		t.Fatal(err)
 	}
 	sink := &flakySink{w: w}
-	r, err := New(Options{Assets: a, Client: cl, Masker: m, Events: sink, Clock: newFakeClock(),
+	r, err := New(Options{Assets: a, Client: cl, Masker: m, Events: sink, Clock: newFakeClock(), State: routerstate.NewMemory(testIdentity(a)),
 		Budgets: BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, Failover: DefaultFailover(), RouterID: "llm-router-test"})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +113,9 @@ func chainEvents(t *testing.T, path string) []audit.RouterEvent {
 		if err := json.Unmarshal(e.Record, &ev); err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, ev)
+		if ev.Kind != "state_created" { // якорь не считается: тесты ведут счёт переходов
+			out = append(out, ev)
+		}
 	}
 	return out
 }
@@ -266,7 +277,7 @@ func TestReplayMatchesMemoryAfterAuditFailureAndResume(t *testing.T) {
 	if _, err := audit.Verify(f, wr.keys, audit.VerifyOptions{Stats: &st}); err != nil {
 		t.Fatalf("цепочка не проходит проверку: %v", err)
 	}
-	if st.RouterEvents != uint64(len(evs)) {
+	if st.RouterEvents != uint64(len(evs))+1 { // +1: якорь state_created, chainEvents его не возвращает
 		t.Errorf("Verify видит %d событий роутера, прочитано %d", st.RouterEvents, len(evs))
 	}
 }

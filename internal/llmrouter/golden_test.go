@@ -19,6 +19,7 @@ import (
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
 	"github.com/limpjungle/aegis3311/internal/pyjson"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 const goldenDir = "../../eval/golden-synthetic"
@@ -356,13 +357,14 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 	}
 	a := loadAssets(t)
 	clock := newFakeClock()
+	rst := routerstate.NewMemory(testIdentity(a)) // один store на оба роутера: второй видит ту же историю
 	newRouter := func() *Router {
 		cl, err := openrouter.NewClient(&a.Config, key, openrouter.NewHTTPTransport(),
 			openrouter.WithURL(srv.URL+"/api/v1/chat/completions"), openrouter.WithSleep(func(context.Context, time.Duration) error { return nil }))
 		if err != nil {
 			t.Fatal(err)
 		}
-		r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: w, Clock: clock,
+		r, err := New(Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: w, Clock: clock, State: rst,
 			Budgets: BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, Failover: DefaultFailover(), RouterID: "llm-router-test"})
 		if err != nil {
 			t.Fatal(err)
@@ -415,7 +417,9 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 			if _, err := w.Append(rec); err != nil {
 				t.Fatalf("%s #%d: %v", profile, i, err)
 			}
-			r.CloseIncident(req.IncidentID)
+			if err := r.CloseIncident(req.IncidentID); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if profile == "inceptron-fp8" && truncated != 1 {
 			t.Errorf("truncated: %d, ожидается 1", truncated)
@@ -441,7 +445,7 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 	if _, err := audit.Verify(f, keys, audit.VerifyOptions{Stats: &st}); err != nil {
 		t.Fatal(err)
 	}
-	if st.Records != 960 || st.RouterEvents != 2 {
-		t.Errorf("цепочка: %+v, ожидается 960 записей и 2 события", st)
+	if st.Records != 960 || st.RouterEvents != 3 { // state_created + 2 перехода
+		t.Errorf("цепочка: %+v, ожидается 960 записей и 3 события (якорь и 2 перехода)", st)
 	}
 }

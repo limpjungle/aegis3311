@@ -25,6 +25,9 @@ type Writer struct {
 	head   Head
 	failed error
 	now    func() time.Time
+	events map[string]struct{} // event_id событий роутера в цепочке
+	last   *RouterEvent        // последнее событие роутера в цепочке
+	log    []RouterEvent       // все события роутера в порядке цепочки
 }
 
 // OpenWriter открывает или создаёт файл цепочки. Существующий файл проверяется целиком (Verify с keys);
@@ -49,7 +52,13 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 		f.Close()
 		return nil, err
 	}
-	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID})
+	events := map[string]struct{}{}
+	var last *RouterEvent
+	var log []RouterEvent
+	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID, OnRouterEvent: func(_ uint64, ev *RouterEvent) {
+		events[ev.EventID], last = struct{}{}, ev
+		log = append(log, *ev)
+	}})
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -62,7 +71,7 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 			return nil, err
 		}
 	}
-	return &Writer{f: f, signer: signer, head: head, now: time.Now}, nil
+	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, log: log}, nil
 }
 
 // Head — текущая голова цепочки.
@@ -100,7 +109,52 @@ func (w *Writer) AppendEvent(ev *RouterEvent) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	return w.appendBody(body)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, dup := w.events[ev.EventID]; dup { // Verify отвергает дубль: цепочка перестала бы открываться
+		return Entry{}, fmt.Errorf("router event: event_id %q уже в цепочке", ev.EventID)
+	}
+	e, err := w.appendBodyLocked(body)
+	if err != nil {
+		return e, err
+	}
+	w.events[ev.EventID] = struct{}{}
+	cp := *ev
+	w.last = &cp
+	w.log = append(w.log, cp)
+	return e, nil
+}
+
+// HasEvent — есть ли в цепочке событие роутера с этим event_id.
+func (w *Writer) HasEvent(eventID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.events[eventID]
+	return ok
+}
+
+// RouterEvents — копия всех событий роутера в порядке цепочки: по ним восстанавливается состояние failover.
+func (w *Writer) RouterEvents() []RouterEvent {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]RouterEvent(nil), w.log...)
+}
+
+// ChainNonEmpty — есть ли в цепочке хоть одна запись (decision record или событие роутера).
+func (w *Writer) ChainNonEmpty() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.head.Seq > 0
+}
+
+// LastRouterEvent — последнее событие роутера в цепочке; false — событий нет.
+func (w *Writer) LastRouterEvent() (RouterEvent, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.last == nil {
+		return RouterEvent{}, false
+	}
+	return *w.last, true
 }
 
 func (w *Writer) usable() error {
@@ -116,6 +170,11 @@ func (w *Writer) usable() error {
 func (w *Writer) appendBody(body []byte) (Entry, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.appendBodyLocked(body)
+}
+
+// appendBodyLocked — appendBody под w.mu.
+func (w *Writer) appendBodyLocked(body []byte) (Entry, error) {
 	if w.failed != nil {
 		return Entry{}, fmt.Errorf("%w: %v", ErrWriterFailed, w.failed)
 	}

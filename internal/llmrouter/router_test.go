@@ -12,6 +12,7 @@ import (
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
 	"github.com/limpjungle/aegis3311/internal/pyjson"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 func pj(t testing.TB, s string) *pyjson.Value {
@@ -45,7 +46,8 @@ func TestNewFailClosed(t *testing.T) {
 	a := loadAssets(t)
 	tr := &stubTransport{}
 	cl, _ := openrouter.NewClient(&a.Config, testKey(t, "k-1"), tr)
-	base := Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: &memSink{}, Clock: newFakeClock(), Budgets: DefaultBudgets(), Failover: DefaultFailover(), RouterID: "r1"}
+	base := Options{Assets: a, Client: cl, Masker: &identityMasker{}, Events: &memSink{}, Clock: newFakeClock(), Budgets: DefaultBudgets(), Failover: DefaultFailover(), RouterID: "r1",
+		State: routerstate.NewMemory(routerstate.Identity{RouterID: "r1", Primary: a.Primary.Name, Fallback: a.Fallback.Name})}
 	if _, err := New(base); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +55,7 @@ func TestNewFailClosed(t *testing.T) {
 		"nil маскировщик":  func(o *Options) { o.Masker = nil },
 		"typed-nil":        func(o *Options) { o.Masker = (*identityMasker)(nil) },
 		"nil Events":       func(o *Options) { o.Events = nil },
+		"nil State":        func(o *Options) { o.State = nil },
 		"nil Clock":        func(o *Options) { o.Clock = nil },
 		"бюджет 0":         func(o *Options) { o.Budgets.IncidentTokens = 0 },
 		"порог failover 0": func(o *Options) { o.Failover.FailThreshold = 0 },

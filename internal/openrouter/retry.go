@@ -321,5 +321,9 @@ func usageNumbers(data *pyjson.Value) (p, c float64, ok bool) {
 	}
 	p, ok1 := num(u.Get("prompt_tokens"))
 	c, ok2 := num(u.Get("completion_tokens"))
-	return p, c, ok1 && ok2
+	// Отрицательные, нецелые и непредставимые значения — не usage: списывается весь резерв.
+	return p, c, ok1 && ok2 && tokenCount(p) && tokenCount(c)
 }
+
+// tokenCount — число токенов: целое от 0 до 2^53 (NaN и Inf отсекаются сравнениями).
+func tokenCount(f float64) bool { return f >= 0 && f <= 1<<53 && f == math.Trunc(f) }

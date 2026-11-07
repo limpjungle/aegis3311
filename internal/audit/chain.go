@@ -128,6 +128,8 @@ type VerifyOptions struct {
 	// Checkpoints — зафиксированные во WORM головы. Каждая должна быть подписана, относиться к этой цепочке
 	// и совпасть с хешем записи того же seq; checkpoint с seq больше головы — признак усечения цепочки.
 	Checkpoints []Checkpoint
+	// OnRouterEvent — если не nil, вызывается для каждого события роутера после проверки уникальности event_id.
+	OnRouterEvent func(seq uint64, ev *RouterEvent)
 }
 
 // VerifyStats — число проверенных записей цепочки по типам.
@@ -208,6 +210,7 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 		}
 		_ = json.Unmarshal(e.Record, &peek) // дубли ключей и неизвестные поля ловит strictjson.Decode ниже
 		var id, idName string
+		var routerEv *RouterEvent
 		switch peek.Schema {
 		case RecordSchema:
 			var rec DecisionRecord
@@ -228,6 +231,7 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 				return fail("router event: %v", err)
 			}
 			id, idName = ev.EventID, "event_id"
+			routerEv = &ev
 			stats.RouterEvents++
 		default:
 			return fail("неизвестная схема записи %q", peek.Schema)
@@ -236,6 +240,9 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 			return fail("%s %s уже был в seq %d", idName, id, prev)
 		}
 		ids[id] = e.Seq
+		if routerEv != nil && opts.OnRouterEvent != nil {
+			opts.OnRouterEvent(e.Seq, routerEv)
+		}
 		for _, c := range cps[e.Seq] {
 			if c.ChainID != e.ChainID || c.HeadHash != e.Hash {
 				return fail("не совпадает с checkpoint (%s)", c.CreatedAt)

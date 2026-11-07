@@ -23,3 +23,16 @@ go run github.com/open-policy-agent/opa@v1.22.2 check --strict policy
 ```
 go run ./cmd/aegis-pep dry-run < {"proposal": <action из ответа v2>, "context": {...}}
 ```
+
+### Вердикт dry-run (`aegisops/pep-verdict/v1`)
+
+| Решение | Когда |
+| --- | --- |
+| `deny` | есть хотя бы одна причина deny; эффективный уровень L0. Deny перекрывает всё, включая caps |
+| `noop` | recommend/none либо действие каталога без deny с эффективным L0 (например, запрошен L0): исполнять нечего; caps остаются в `reasons` |
+| `allow` | эффективный уровень равен запрошенному и выше L0 |
+| `downgrade` | L0 < эффективный уровень < запрошенного |
+
+Два вида `noop` различаются по `action.type`: `recommend`/`none` либо действие каталога. У L0-варианта заполнены `action.version`, `computed`, `target`, `ceiling`. Noop при эффективном L0 — решение 07.11.2026, утверждено; строка схемы вердикта не менялась.
+
+Would-be нарушение (G0) до появления lease (MVP-B) — только вердикт `deny`: `downgrade` (в том числе из-за `lease_missing`) и `noop` нарушениями не считаются (решение 07.11.2026, утверждено). Подсчёт механический: `decision == "deny"`; причины понижения видны в `reasons[]` (`effect: cap`). Правило пересматривается при вводе lease в MVP-B.

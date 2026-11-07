@@ -3,9 +3,14 @@
 
 Команды:
   update  — найти новые прогоны пробы профиля, посчитать метрики против эталона, добавить точки
-            в состояние calibration/<profile>.json и вынести вердикт по последней точке
+            в состояние calibration/<profile>-<set_tag>.json и вынести вердикт по последней точке;
+            нет эталона для текущего набора → ALERT (no_reference), состояние не пишется
   status  — показать состояние калибровки и последние точки
   freeze  — заморозить базу (среднее и σ по точкам калибровки); нужно ≥ --min-points точек
+
+Состояние калибровки хранится по версии набора (set_tag — имя файла набора без расширения, например probe-v3);
+смена набора начинает калибровку заново (07.11.2026). Состояние набора probe-v2 — архив в прежнем файле
+calibration/<profile>.json, оно не меняется.
 
 Правила (утверждены 05–06.11.2026):
   - основная метрика — decision_agreement (первопричина + тип действия совпали с эталоном);
@@ -16,7 +21,7 @@
     медленный сдвиг — EWMA (λ = 0,2, L = 2,7) или две точки подряд за 2σ_eff по одну сторону → ALERT;
   - база не пересчитывается автоматически: повторная заморозка только с --force (утверждённое изменение).
 
-Коды выхода: 0 — OK; 10 — ALERT; 20 — DOWNGRADE; 2 — ошибка конфигурации или данных.
+Коды выхода: 0 — OK; 10 — ALERT (в том числе no_reference); 20 — DOWNGRADE; 2 — ошибка конфигурации или данных.
 """
 import argparse
 import datetime as dt
@@ -38,10 +43,15 @@ SIGMA_FLOOR_PP = 0.5          # 3 × 0,5 = 1,5 п. п. — нижний пред
 EWMA_LAMBDA, EWMA_L = 0.2, 2.7
 MIN_CASES_FOR_DOWNGRADE = 460
 EXIT = {"OK": 0, "ALERT": 10, "DOWNGRADE": 20}
+LEGACY_STATE_TAG = "probe-v2"   # состояние набора v2 — архив в calibration/<profile>.json
 
 
 class CalibError(Exception):
     pass
+
+
+class NoReference(CalibError):
+    """Для текущего набора нет замороженного эталона."""
 
 
 def sha256_file(path):
@@ -72,7 +82,7 @@ def find_reference(base, profile, set_sha):
                 and meta.get("status") == "completed":
             found.append((meta.get("frozen_at") or meta.get("finished_at") or "", meta_path[:-len(".meta.json")], meta))
     if not found:
-        raise CalibError(f"no frozen reference for profile {profile!r} on the current set (sha {set_sha[:12]}…)")
+        raise NoReference(f"no frozen reference for profile {profile!r} on the current set (sha {set_sha[:12]}…)")
     found.sort()
     return found[-1][1], found[-1][2]
 
@@ -157,14 +167,24 @@ def overall(findings):
     return "DOWNGRADE" if "DOWNGRADE" in levels else "ALERT" if "ALERT" in levels else "OK"
 
 
-def state_path(base, profile):
-    return os.path.join(base, "calibration", f"{profile}.json")
+def set_tag(entry):
+    """Версия набора по имени файла (как в run.py): data/probe-v3.jsonl -> probe-v3."""
+    return os.path.splitext(os.path.basename(entry["file"]))[0]
 
 
-def load_state(base, profile, ref_path, ref_meta, cases, ref_rows, set_sha):
-    path = state_path(base, profile)
+def state_path(base, profile, tag):
+    if tag == LEGACY_STATE_TAG:
+        return os.path.join(base, "calibration", f"{profile}.json")
+    return os.path.join(base, "calibration", f"{profile}-{tag}.json")
+
+
+def load_state(base, profile, tag, ref_path, ref_meta, cases, ref_rows, set_sha):
+    path = state_path(base, profile, tag)
     if os.path.exists(path):
         st = load_json(path)
+        if st.get("set_sha256") != set_sha:
+            raise CalibError(f"calibration state {os.path.relpath(path, base)} belongs to another set "
+                             f"(sha {str(st.get('set_sha256'))[:12]}…, current {set_sha[:12]}…)")
         if st["reference"]["sha256"] != sha256_file(ref_path):
             raise CalibError("calibration state belongs to another reference; a new reference needs an approved reset "
                              f"(move {os.path.relpath(path, base)} aside and start a new calibration)")
@@ -186,14 +206,25 @@ def context(base, profile):
     if sha256_file(set_path) != entry["sha256"]:
         raise CalibError("probe set file does not match manifest")
     cases = score.load_jsonl(set_path)
-    ref_path, ref_meta = find_reference(base, profile, entry["sha256"])
+    tag = set_tag(entry)
+    try:
+        ref_path, ref_meta = find_reference(base, profile, entry["sha256"])
+    except NoReference as e:
+        e.tag, e.set_sha = tag, entry["sha256"]
+        raise
     ref_rows = score.load_jsonl(ref_path)
-    return cases, ref_path, ref_meta, ref_rows, entry["sha256"]
+    return cases, ref_path, ref_meta, ref_rows, entry["sha256"], tag
 
 
 def cmd_update(base, profile, out):
-    cases, ref_path, ref_meta, ref_rows, set_sha = context(base, profile)
-    st = load_state(base, profile, ref_path, ref_meta, cases, ref_rows, set_sha)
+    try:
+        cases, ref_path, ref_meta, ref_rows, set_sha, tag = context(base, profile)
+    except NoReference as e:
+        # окно между сменой набора и записью эталонов: не падаем и не понижаем, состояние не пишем
+        print(f"{profile}: no frozen reference for {e.tag} (sha {e.set_sha[:12]}…); calibration skipped", file=out)
+        print("verdict: ALERT (no_reference)", file=out)
+        return EXIT["ALERT"]
+    st = load_state(base, profile, tag, ref_path, ref_meta, cases, ref_rows, set_sha)
     known = {p["run_id"] for p in st["points"]}
     verdict, last_findings, added = "OK", [], 0
     for _, run_path, meta in eligible_runs(base, profile, ref_meta):
@@ -210,7 +241,7 @@ def cmd_update(base, profile, out):
         st["points"].append(point)
         verdict, last_findings, added = point["verdict"], findings, added + 1
     st["updated_at"] = now()
-    write_json_atomic(state_path(base, profile), st)
+    write_json_atomic(state_path(base, profile, tag), st)
     phase = "frozen" if st.get("frozen") else f"calibrating ({len(st['points'])} points)"
     print(f"{profile}: {added} new point(s), {phase}", file=out)
     if not added:
@@ -225,8 +256,8 @@ def cmd_update(base, profile, out):
 
 
 def cmd_freeze(base, profile, min_points, force, out):
-    cases, ref_path, ref_meta, ref_rows, set_sha = context(base, profile)
-    st = load_state(base, profile, ref_path, ref_meta, cases, ref_rows, set_sha)
+    cases, ref_path, ref_meta, ref_rows, set_sha, tag = context(base, profile)
+    st = load_state(base, profile, tag, ref_path, ref_meta, cases, ref_rows, set_sha)
     if st.get("frozen") and not force:
         raise CalibError("base is already frozen; re-freezing needs an approved change (--force)")
     pts = [p for p in st["points"] if not p.get("after_freeze")] if not force else st["points"]
@@ -241,7 +272,7 @@ def cmd_freeze(base, profile, min_points, force, out):
                                 "threshold_pp": round(3 * sigma_eff(sd), 4)}
     st["frozen"] = {"frozen_at": now(), "points": [p["run_id"] for p in pts], "metrics": base_metrics}
     st["ewma"] = {m: v["mean"] for m, v in base_metrics.items()}
-    write_json_atomic(state_path(base, profile), st)
+    write_json_atomic(state_path(base, profile, tag), st)
     print(f"{profile}: base frozen on {len(pts)} points", file=out)
     for m, v in base_metrics.items():
         print(f"  {m}: mean {v['mean']:.2f}%, σ {v['sigma']:.2f} pp, downgrade threshold ±{v['threshold_pp']:.2f} pp", file=out)
@@ -249,9 +280,15 @@ def cmd_freeze(base, profile, min_points, force, out):
 
 
 def cmd_status(base, profile, out):
-    path = state_path(base, profile)
+    entry = load_json(os.path.join(base, "data", "manifest.json"))["sets"]["probe"]
+    tag = set_tag(entry)
+    path = state_path(base, profile, tag)
+    print(f"{profile}: set {tag}, state {os.path.relpath(path, base)}", file=out)
     if not os.path.exists(path):
         print(f"{profile}: no calibration state yet", file=out)
+        legacy = state_path(base, profile, LEGACY_STATE_TAG)
+        if tag != LEGACY_STATE_TAG and os.path.exists(legacy):
+            print(f"archived {LEGACY_STATE_TAG} state: {os.path.relpath(legacy, base)} (calibration stopped 2026-11-07)", file=out)
         return 0
     st = load_json(path)
     print(f"{profile}: reference {st['reference']['file']}", file=out)

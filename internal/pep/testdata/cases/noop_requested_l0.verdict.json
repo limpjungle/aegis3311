@@ -1,0 +1,32 @@
+{
+ "schema": "aegisops/pep-verdict/v1",
+ "mode": "dry-run",
+ "decision": "noop",
+ "action": {
+  "type": "workload.scale_out",
+  "version": "1.0.0",
+  "reversibility": "R1",
+  "params": {
+   "scope": null,
+   "pod_name": null,
+   "reason": null,
+   "parameter": null
+  },
+  "computed": {
+   "new_min_replicas": 6
+  }
+ },
+ "target": {
+  "kind": "autoscaling/HorizontalPodAutoscaler",
+  "namespace": "shop",
+  "environment": "staging"
+ },
+ "requested_level": "L0",
+ "ceiling": "L3",
+ "effective_level": "L0",
+ "reasons": [],
+ "catalog_digest": "<digest>",
+ "policy_bundle_digest": "<digest>",
+ "policy_revision": "0.1.0",
+ "input_digest": "<digest>"
+}

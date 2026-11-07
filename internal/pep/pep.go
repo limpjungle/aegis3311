@@ -161,7 +161,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	}
 	rs = append(rs, goCaps...)
 
-	// 9. Слияние.
+	// 9. Слияние: effective = min(requested, политика, caps); L0 без deny → noop.
 	if hasDeny(rs) {
 		return done()
 	}
@@ -174,9 +174,13 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 		eff = minLevel(eff, r.Level)
 	}
 	v.EffectiveLevel = eff
-	v.Decision = "allow"
-	if eff != v.RequestedLevel {
+	switch {
+	case eff == "L0":
+		v.Decision = "noop" // на L0 агент ничего не исполняет; caps остаются в reasons
+	case eff != v.RequestedLevel:
 		v.Decision = "downgrade"
+	default:
+		v.Decision = "allow"
 	}
 	return done()
 }

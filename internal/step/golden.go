@@ -7,9 +7,9 @@ import (
 
 // StateFromGoldenInput строит TargetState из поля input кейса golden-набора (input.service, input.rollout, input.db).
 //
-// Списка подов цели во входе нет: единственный источник имён — перечисление
-// allowed_actions[type==workload.restart].params.pod_name.enum. Поэтому для restart
-// кросс-проверка с набором частично тавтологична.
+// Поды цели берутся из input.service.pods (формат набора v3), а не из enum pod_name в allowed_actions:
+// так кросс-проверка restart с allowed_actions набора не тавтологична. Нет поля (набор старше v3) — ошибка,
+// отката на enum нет.
 func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 	var in struct {
 		Service struct {
@@ -17,6 +17,7 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 			Namespace  string      `json:"namespace"`
 			Database   *string     `json:"database"`
 			Autoscaler *Autoscaler `json:"autoscaler"`
+			Pods       *[]string   `json:"pods"`
 		} `json:"service"`
 		Rollout *struct {
 			Name        *string `json:"name"`
@@ -25,30 +26,20 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 				Name string `json:"name"`
 			} `json:"analysis_run"`
 		} `json:"rollout"`
-		DB             *DB `json:"db"`
-		AllowedActions []struct {
-			Type   string `json:"type"`
-			Params struct {
-				PodName struct {
-					Enum []string `json:"enum"`
-				} `json:"pod_name"`
-			} `json:"params"`
-		} `json:"allowed_actions"`
+		DB *DB `json:"db"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return TargetState{}, fmt.Errorf("golden input: %w", err)
 	}
+	if in.Service.Pods == nil {
+		return TargetState{}, fmt.Errorf("golden input: нет input.service.pods (набор старше v3)")
+	}
 	s := TargetState{Service: in.Service.Name, Namespace: in.Service.Namespace, Database: in.Service.Database,
-		Autoscaler: in.Service.Autoscaler, DB: in.DB}
+		Autoscaler: in.Service.Autoscaler, DB: in.DB, Pods: *in.Service.Pods}
 	if r := in.Rollout; r != nil {
 		s.Rollout = &Rollout{Name: r.Name, Phase: r.Phase}
 		if r.AnalysisRun != nil {
 			s.Rollout.AnalysisRun = r.AnalysisRun.Name
-		}
-	}
-	for _, a := range in.AllowedActions {
-		if a.Type == "workload.restart" {
-			s.Pods = a.Params.PodName.Enum
 		}
 	}
 	return s, nil

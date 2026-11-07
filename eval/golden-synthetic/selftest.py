@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def fmt_of(case):
-    return case.get("answer_format", "v1")
+    return case.get("answer_format", "v1")  # у наборов v2 и v3 формат ответа v2
 
 
 def blank(fmt="v1"):
@@ -58,7 +58,8 @@ def dump(cases):
 def main():
     failures = []
     manifest = json.load(open(os.path.join(HERE, "data", "manifest.json"), encoding="utf-8"))
-    for set_name, fmt in (("probe", "v1"), ("dev", "v1"), ("probe", "v2"), ("dev", "v2")):
+    for set_name, fmt in (("probe", "v1"), ("dev", "v1"), ("probe", "v2"), ("dev", "v2"), ("probe", "v3"), ("dev", "v3")):
+        afmt = generate.ANSWER_FORMAT[fmt]  # формат ответа модели; fmt — версия набора
         seed = generate.DEFAULT_SEED[set_name]
         a, b = generate.build(set_name, seed, fmt), generate.build(set_name, seed, fmt)
         if hashlib.sha256(dump(a)).hexdigest() != hashlib.sha256(dump(b)).hexdigest():
@@ -67,9 +68,21 @@ def main():
         stored = os.path.join(HERE, "data", f"{set_name}-{fmt}.jsonl")
         if os.path.exists(stored) and open(stored, "rb").read() != dump(a):
             failures.append(f"{set_name}/{fmt}: data file differs from generator output")
-        if manifest["sets"][set_name]["file"] == f"data/{set_name}-{fmt}.jsonl" and \
-                manifest["sets"][set_name]["sha256"] != hashlib.sha256(dump(a)).hexdigest():
+        # запись набора: в актуальных sets, иначе в sets_history
+        want_file = f"data/{set_name}-{fmt}.jsonl"
+        entries = [manifest["sets"][set_name]] + [h["sets"][set_name] for h in manifest.get("sets_history", [])
+                                                  if set_name in h.get("sets", {})]
+        entry = next((e for e in entries if e["file"] == want_file), None)
+        if entry is None:
+            failures.append(f"{set_name}/{fmt}: no manifest entry for {want_file}")
+        elif entry["sha256"] != hashlib.sha256(dump(a)).hexdigest():
             failures.append(f"{set_name}/{fmt}: manifest sha256 differs from generator output")
+        if fmt == "v3":
+            for c in a:
+                if any(k.startswith("_") for k in c["input"]):
+                    failures.append(f"{c['id']}: input has service keys starting with '_'")
+                if not isinstance(c["input"].get("service", {}).get("pods"), list):
+                    failures.append(f"{c['id']}: no input.service.pods")
         ids = [c["id"] for c in a]
         if len(ids) != len(set(ids)):
             failures.append(f"{set_name}: duplicate ids")
@@ -91,18 +104,18 @@ def main():
         if agg["all:all"]["harmful"]["k"] != 0:
             failures.append(f"{set_name}: oracle harmful > 0")
 
-        none = [{"id": c["id"], "answer": answer("other", "unknown", "none", blank(fmt))} for c in a]
-        if fmt == "v1":
+        none = [{"id": c["id"], "answer": answer("other", "unknown", "none", blank(afmt))} for c in a]
+        if afmt == "v1":
             # v1: величину выбирает модель, параметр вне границ делает действие недопустимым
-            scale_params = {**blank(fmt), "new_min_replicas": 500}
+            scale_params = {**blank(afmt), "new_min_replicas": 500}
         else:
             # v2: величину считает код; «всегда scale_out» допустим только там, где scale_out правильный
-            scale_params = blank(fmt)
+            scale_params = blank(afmt)
         scale = [{"id": c["id"], "answer": answer("RB-006", "load_growth", "workload.scale_out", scale_params)}
                  for c in a]
         p_none = score.aggregate(score.score(a, none))["all:all"]["admissible"]["p"]
         p_scale = score.aggregate(score.score(a, scale))["all:all"]["admissible"]["p"]
-        scale_limit = 0.0 if fmt == "v1" else 0.25
+        scale_limit = 0.0 if afmt == "v1" else 0.25
         if not p_none < 0.25 or p_scale > scale_limit:
             failures.append(f"{set_name}/{fmt}: weak discrimination (none={p_none}, scale_out -> {p_scale})")
 

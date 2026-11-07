@@ -9,8 +9,10 @@ const (
 
 // Verdict — результат проверки. Временных меток нет (их добавляет decision record): вердикт детерминирован.
 type Verdict struct {
-	Schema         string        `json:"schema"`
-	Mode           string        `json:"mode"`
+	Schema string `json:"schema"`
+	Mode   string `json:"mode"`
+	// deny — есть причина deny, уровень L0; noop — recommend/none либо действие каталога без deny с эффективным L0;
+	// allow — эффективный = запрошенный > L0; downgrade — L0 < эффективный < запрошенный.
 	Decision       string        `json:"decision"` // allow | downgrade | deny | noop
 	Action         VerdictAction `json:"action"`
 	Target         *TargetRef    `json:"target"`

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/limpjungle/aegis3311/internal/catalog"
@@ -20,6 +21,18 @@ type GoldenCase struct {
 	ID    string `json:"id"`
 	Input struct {
 		AllowedActions json.RawMessage `json:"allowed_actions"`
+		Service        struct {
+			Pods       []string `json:"pods"`
+			Autoscaler struct {
+				Replicas int `json:"replicas"`
+			} `json:"autoscaler"`
+		} `json:"service"`
+		K8sEvents []struct {
+			Object string `json:"object"`
+		} `json:"k8s_events"`
+		Metrics []struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metrics"`
 	} `json:"input"`
 	RawInput json.RawMessage `json:"-"`
 }
@@ -84,6 +97,59 @@ func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 		t.Fatalf("%s: кейсов %d (manifest %d), ожидалось %d", set, len(cases), ms.Cases, wantCases)
 	}
 	return cases
+}
+
+func TestStateFromGoldenInputPods(t *testing.T) {
+	// поды берутся из service.pods, а не из enum allowed_actions
+	raw := json.RawMessage(`{"service":{"name":"a","namespace":"n","pods":["b"]},
+		"allowed_actions":[{"type":"workload.restart","params":{"pod_name":{"enum":["a"]}}}]}`)
+	s, err := StateFromGoldenInput(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(s.Pods, []string{"b"}) {
+		t.Errorf("Pods = %v, ожидалось [b]", s.Pods)
+	}
+	// набор старше v3: поля нет — ошибка, отката на enum нет
+	raw = json.RawMessage(`{"service":{"name":"a","namespace":"n"},
+		"allowed_actions":[{"type":"workload.restart","params":{"pod_name":{"enum":["a"]}}}]}`)
+	if _, err := StateFromGoldenInput(raw); err == nil {
+		t.Error("ожидалась ошибка при отсутствии service.pods")
+	}
+}
+
+// TestGoldenPodsConsistent: список подов цели согласован с событиями, метками метрик и числом реплик.
+func TestGoldenPodsConsistent(t *testing.T) {
+	for _, set := range []struct {
+		name  string
+		cases int
+	}{{"probe", 480}, {"dev", 113}} {
+		t.Run(set.name, func(t *testing.T) {
+			for _, c := range readGolden(t, set.name, set.cases) {
+				in := c.Input
+				pods := map[string]bool{}
+				for _, p := range in.Service.Pods {
+					if pods[p] {
+						t.Errorf("%s: дубликат пода %s", c.ID, p)
+					}
+					pods[p] = true
+				}
+				if len(in.Service.Pods) != in.Service.Autoscaler.Replicas {
+					t.Errorf("%s: подов %d, реплик %d", c.ID, len(in.Service.Pods), in.Service.Autoscaler.Replicas)
+				}
+				for _, e := range in.K8sEvents {
+					if name, ok := strings.CutPrefix(e.Object, "pod/"); ok && !pods[name] {
+						t.Errorf("%s: событие про под %s вне service.pods", c.ID, name)
+					}
+				}
+				for _, m := range in.Metrics {
+					if p, ok := m.Labels["pod"]; ok && !pods[p] {
+						t.Errorf("%s: метрика с меткой pod=%s вне service.pods", c.ID, p)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestGoldenSetCrossCheck(t *testing.T) {

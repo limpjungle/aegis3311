@@ -1,5 +1,6 @@
 // Package step содержит детерминированные правила шага и вывод доступных действий.
-// Формулы — зеркало eval/golden-synthetic/generate.py (step_*, allowed_actions_v2); расхождение ловит кросс-проверка на наборах.
+// Формулы — зеркало eval/golden-synthetic/generate.py (step_*, allowed_actions_v2); расхождение ловит кросс-проверка на наборах
+// (формат набора v3: поды цели берутся из input.service.pods).
 package step
 
 import "fmt"

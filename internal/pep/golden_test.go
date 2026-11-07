@@ -267,7 +267,13 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	for _, c := range loadGolden(t, "probe", 480) {
 		cases[c.ID] = c
 	}
-	files, _ := filepath.Glob(filepath.Join(goldenDir, "refs/*/probe-v2-*.jsonl"))
+	// эталоны v2 (архив) и v3 прогоняются на состояниях активного набора по id
+	var files []string
+	for _, ver := range []string{"v2", "v3"} {
+		fs, _ := filepath.Glob(filepath.Join(goldenDir, "refs/*/probe-"+ver+"-*.jsonl"))
+		t.Logf("эталонов %s: %d", ver, len(fs))
+		files = append(files, fs...)
+	}
 	if len(files) == 0 {
 		t.Skip("нет refs")
 	}

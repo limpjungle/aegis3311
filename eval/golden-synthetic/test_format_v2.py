@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Тесты формата ответа v2 и метрики decision_agreement (без сети). Запуск: python3 -m unittest -v test_format_v2"""
+import copy
+import hashlib
 import json
 import math
 import os
@@ -92,6 +94,73 @@ class TestStepRules(unittest.TestCase):
         sch = json.load(open(os.path.join(HERE, "schema", "answer.schema-v2.json"), encoding="utf-8"))
         keys = sch["properties"]["action"]["properties"]["params"]["required"]
         self.assertEqual(set(keys), set(score.PARAM_TYPES_V2))
+
+
+class TestSetV3(unittest.TestCase):
+    """Набор v3: формат ответа v2, но модель видит список подов цели (решение 07.11.2026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = json.load(open(os.path.join(HERE, "data", "manifest.json"), encoding="utf-8"))
+
+    def build_pair(self, set_name):
+        seed = generate.DEFAULT_SEED[set_name]
+        return generate.build(set_name, seed, "v2"), generate.build(set_name, seed, "v3")
+
+    def test_v3_differs_from_v2_only_by_pods_and_version(self):
+        for set_name in ("probe", "dev"):
+            v2, v3 = self.build_pair(set_name)
+            self.assertEqual([c["id"] for c in v2], [c["id"] for c in v3])
+            for a, b in zip(v2, v3):
+                b = copy.deepcopy(b)
+                self.assertEqual(b["generator_version"], "3.0.0")
+                self.assertIn("pods", b["input"]["service"])
+                del b["input"]["service"]["pods"]
+                b["generator_version"] = a["generator_version"]
+                self.assertEqual(a, b, a["id"])
+
+    def test_v3_answer_format_and_pods(self):
+        for set_name in ("probe", "dev"):
+            _, v3 = self.build_pair(set_name)
+            for c in v3:
+                self.assertEqual(c["answer_format"], "v2")
+                pods = c["input"]["service"]["pods"]
+                restart = [a for a in c["input"]["allowed_actions"] if a["type"] == "workload.restart"]
+                for a in restart:
+                    self.assertEqual(pods, a["params"]["pod_name"]["enum"], c["id"])
+
+    def test_history_shas_reproduce(self):
+        hist = next(h for h in self.manifest["sets_history"] if h.get("set_format") == "v2")
+        hist1 = next(h for h in self.manifest["sets_history"] if h["answer_format"] == "v1")
+        for fmt, entry in (("v2", hist), ("v1", hist1)):
+            for set_name in ("probe", "dev"):
+                cases = generate.build(set_name, generate.DEFAULT_SEED[set_name], fmt)
+                self.assertEqual(hashlib.sha256(selftest.dump(cases)).hexdigest(), entry["sets"][set_name]["sha256"],
+                                 f"{set_name}/{fmt}")
+
+    def test_v3_pods_are_unique_match_replicas_and_cover_events(self):
+        for set_name in ("probe", "dev"):
+            _, v3 = self.build_pair(set_name)
+            for c in v3:
+                inp = c["input"]
+                pods = inp["service"]["pods"]
+                self.assertEqual(len(pods), len(set(pods)), c["id"])
+                self.assertEqual(len(pods), inp["service"]["autoscaler"]["replicas"], c["id"])
+                for ev in inp.get("k8s_events", []):
+                    name = ev["object"].split("/", 1)[1] if ev["object"].startswith("pod/") else None
+                    if name is not None:
+                        self.assertIn(name, pods, c["id"])
+                for m in inp.get("metrics", []):
+                    if "pod" in m.get("labels", {}):
+                        self.assertIn(m["labels"]["pod"], pods, c["id"])
+
+    def test_stored_v3_files_match_manifest(self):
+        for set_name in ("probe", "dev"):
+            entry = self.manifest["sets"][set_name]
+            self.assertEqual(entry["file"], f"data/{set_name}-v3.jsonl")
+            raw = open(os.path.join(HERE, entry["file"]), "rb").read()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
+        self.assertEqual(self.manifest["set_format"], "v3")
 
 
 if __name__ == "__main__":

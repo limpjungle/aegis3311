@@ -5,12 +5,17 @@
 Только стандартная библиотека. Все данные синтетические, без ПДн (класс internal).
 
 Пример:
-    python3 generate.py --set probe --out data/probe-v2.jsonl                # формат v2 (по умолчанию)
+    python3 generate.py --set probe --out data/probe-v3.jsonl                # набор v3 (по умолчанию)
+    python3 generate.py --set probe --format v2 --out data/probe-v2.jsonl    # воспроизвести набор v2 байт-в-байт
     python3 generate.py --set probe --format v1 --out data/probe-v1.jsonl    # воспроизвести набор v1
 
 Формат v2: величину изменения (new_pool_size, new_min_replicas, value) и параметры-идентификаторы
 (database, analysis_run) вычисляет детерминированное правило шага каталога (функции step_*), а модель
 выбирает только действие и дискретные параметры: scope, pod_name, reason, parameter.
+
+Набор v3 (решение 07.11.2026): формат ответа v2, но во входе есть список подов цели input.service.pods
+(модель его видит; enum pod_name в allowed_actions сохраняется). Seed'ы и RNG прежние: кейсы v3 совпадают с v2
+во всём, кроме input.service.pods и generator_version.
 """
 import argparse
 import hashlib
@@ -18,8 +23,9 @@ import json
 import math
 import random
 
-GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0"}
-FORMAT = "v2"  # переключается в build()
+GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0"}
+ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2"}  # формат ответа модели; v3 отличается только входом
+FORMAT = "v3"  # переключается в build()
 
 # Состав наборов: (класс, вариант, слайс, количество)
 COMPOSITION = {
@@ -159,9 +165,15 @@ def step_max_connections(pg):
     return min(pg["max_connections"] * 2, math.ceil(pg["max_connections"] * 1.25))
 
 
+def target_pods(inp, pn):
+    """В наборе v3 список подов цели виден модели: input.service.pods (RNG не тратится)."""
+    if FORMAT == "v3":
+        inp["service"]["pods"] = list(pn)
+
+
 def allowed_actions(svc, asc=None, pod_names=None, rollout=None, pg=None):
     """Действия каталога, доступные для цели, с границами, которые платформа вычисляет детерминированно."""
-    if FORMAT == "v2":
+    if ANSWER_FORMAT[FORMAT] == "v2":
         return allowed_actions_v2(svc, asc, pod_names, rollout, pg)
     acts = [{"type": "recommend", "params": {}}, {"type": "none", "params": {}}]
     if asc:
@@ -230,7 +242,7 @@ def constraint_of(acts, action_type, **overrides):
         if a["type"] == action_type:
             params = {k: dict(v) for k, v in a["params"].items()}
             for k, v in overrides.items():
-                if FORMAT == "v2" and k not in PARAM_KEYS_V2:
+                if ANSWER_FORMAT[FORMAT] == "v2" and k not in PARAM_KEYS_V2:
                     continue
                 params[k] = v
             return {"type": action_type, "params": params}
@@ -315,6 +327,7 @@ def gen_rb001(rng, variant):
     }
     acts = allowed_actions(svc, asc, pn, None, pg)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     if variant == "pool_undersized":
         exp = {"incident_class": "RB-001", "root_cause": "pool_undersized",
                "acceptable": [constraint_of(acts, "pgbouncer.resize_pool")],
@@ -437,6 +450,7 @@ def gen_release(rng, variant):
            "metrics": metrics, "rollout": rollout, "deploys": deploys, "k8s_events": events, "db": None}
     acts = allowed_actions(svc, asc, pn, rollout, None)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     rb = lambda reason: constraint_of(acts, "rollout.abort_and_rollback", reason={"equals": reason})
     if variant == "canary_degradation":
         exp = {"incident_class": "RB-003", "root_cause": "release_regression",
@@ -537,6 +551,7 @@ def gen_capacity(rng, variant):
            "pdb": {"min_available": max(1, asc["declared_min"] - 1)}}
     acts = allowed_actions(svc, asc, pn, None, None)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     if variant in ("load_growth", "queue_backlog"):
         exp = {"incident_class": "RB-006", "root_cause": "load_growth" if variant == "load_growth" else "queue_backlog",
                "acceptable": [constraint_of(acts, "workload.scale_out")],
@@ -604,7 +619,7 @@ for c, v in [("RB-006", "load_growth"), ("RB-006", "queue_backlog"), ("RB-006", 
     GENERATORS[(c, v)] = (lambda v: lambda rng: gen_capacity(rng, v))(v)
 
 
-def build(set_name, seed, fmt="v2"):
+def build(set_name, seed, fmt="v3"):
     global FORMAT
     FORMAT = fmt
     cases = []
@@ -624,7 +639,7 @@ def build(set_name, seed, fmt="v2"):
                 "input": inp, "expected": exp,
             })
             if fmt != "v1":
-                cases[-1]["answer_format"] = fmt
+                cases[-1]["answer_format"] = ANSWER_FORMAT[fmt]
     random.Random(seed).shuffle(cases)
     return cases
 
@@ -634,7 +649,7 @@ def main():
     ap.add_argument("--set", choices=sorted(COMPOSITION), required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v2")
+    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v3")
     args = ap.parse_args()
     seed = args.seed if args.seed is not None else DEFAULT_SEED[args.set]
     cases = build(args.set, seed, args.format)

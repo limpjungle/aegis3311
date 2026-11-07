@@ -132,7 +132,11 @@ func TestEvaluate_ConcurrentSafe(t *testing.T) {
 func FuzzEvaluateRaw(f *testing.F) {
 	eng := newEngine(f)
 	seedCtx, _ := json.Marshal(permissive(richState()))
+	l0 := permissive(richState())
+	l0.Level.Level = sp("L0")
+	l0Ctx, _ := json.Marshal(l0)
 	seeds := []struct{ prop, ctx string }{
+		{`{"type":"workload.scale_out",` + validParamsJSON + `}`, string(l0Ctx)},
 		{`{"type":"workload.scale_out",` + validParamsJSON + `}`, string(seedCtx)},
 		{`{"type":"workload.restart","params":{"scope":"pod","pod_name":"geo-svc-aaa-11111","reason":null,"parameter":null}}`, string(seedCtx)},
 		{`{"type":"postgres.set_restart_param","params":{"scope":null,"pod_name":null,"reason":null,"parameter":"shared_buffers"}}`, string(seedCtx)},
@@ -144,6 +148,7 @@ func FuzzEvaluateRaw(f *testing.F) {
 		f.Add([]byte(s.prop), []byte(s.ctx))
 	}
 	levels := map[string]bool{"L0": true, "L1": true, "L2": true, "L3": true}
+	rank := map[string]int{"L0": 0, "L1": 1, "L2": 2, "L3": 3}
 	f.Fuzz(func(t *testing.T, prop, ctxJSON []byte) {
 		var c pep.Context
 		if err := json.Unmarshal(ctxJSON, &c); err != nil {
@@ -165,14 +170,17 @@ func FuzzEvaluateRaw(f *testing.F) {
 				t.Fatalf("deny с уровнем %s", v.EffectiveLevel)
 			}
 		case "allow":
-			if v.EffectiveLevel != v.RequestedLevel || hasDenyReason(v.Reasons) {
+			if v.EffectiveLevel != v.RequestedLevel || v.EffectiveLevel == "L0" || hasDenyReason(v.Reasons) {
 				t.Fatalf("allow нарушает инвариант: %+v", v)
 			}
 		case "downgrade":
-			if v.EffectiveLevel == v.RequestedLevel || hasDenyReason(v.Reasons) {
+			if v.EffectiveLevel == "L0" || hasDenyReason(v.Reasons) || rank[v.EffectiveLevel] >= rank[v.RequestedLevel] {
 				t.Fatalf("downgrade нарушает инвариант: %+v", v)
 			}
 		case "noop":
+			if v.EffectiveLevel != "L0" || hasDenyReason(v.Reasons) {
+				t.Fatalf("noop нарушает инвариант: %+v", v)
+			}
 		default:
 			t.Fatalf("неизвестное решение %q", v.Decision)
 		}

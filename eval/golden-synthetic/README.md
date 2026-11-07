@@ -17,11 +17,12 @@
 | `prompt/system-v3.md` | Системный промпт для формата v2 (активный, с 06.11.2026; какой промпт активен — указано в `data/manifest.json`) |
 | `prompt/system-v2.md` | Промпт формата v1, хранится для истории |
 | `prompt/system-v1.md` | Предыдущая версия промпта, хранится для истории (`prompt_history` в manifest) |
-| `data/probe-v2.jsonl` | Набор для ежедневной пробы и eval endpoint'ов, формат v2 (480 кейсов, активный) |
-| `data/dev-v2.jsonl` | Отдельный набор для отладки промптов, формат v2 (113 кейсов, другой seed) |
+| `data/probe-v3.jsonl` | Набор для ежедневной пробы и eval endpoint'ов, набор v3 (формат ответа v2 + `input.service.pods`; 480 кейсов, активный с 07.11.2026) |
+| `data/dev-v3.jsonl` | Отдельный набор для отладки промптов, набор v3 (113 кейсов, другой seed) |
+| `data/probe-v2.jsonl`, `data/dev-v2.jsonl` | Наборы v2 (без списка подов во входе), хранятся для истории (`sets_history` в manifest) |
 | `data/probe-v1.jsonl`, `data/dev-v1.jsonl` | Те же кейсы в формате v1 (величину выбирала модель), хранятся для истории |
 | `test_format_v2.py` | Тесты формата v2, правил шага и метрики `decision_agreement` |
-| `calibrate.py` | Калибровка и контроль ежедневной пробы: `update` / `status` / `freeze`, состояние в `calibration/<profile>.json`; коды выхода 0 OK, 10 ALERT, 20 DOWNGRADE |
+| `calibrate.py` | Калибровка и контроль ежедневной пробы: `update` / `status` / `freeze`, состояние по версии набора в `calibration/<profile>-<set_tag>.json` (для probe-v2 — архив `calibration/<profile>.json`); коды выхода 0 OK, 10 ALERT (в том числе `no_reference`: для текущего набора нет эталона), 20 DOWNGRADE |
 | `test_calibrate.py` | Тесты калибровки на синтетических прогонах |
 | `data/manifest.json` | Версии, seed'ы и SHA-256 наборов и промпта |
 
@@ -29,9 +30,10 @@
 
 ```bash
 python3 selftest.py                                        # проверка генератора и скоринга
-python3 generate.py --set probe --out data/probe-v2.jsonl  # пересоздать набор v2 (хеш должен совпасть с manifest.json)
+python3 generate.py --set probe --out data/probe-v3.jsonl  # пересоздать набор v3 (хеш должен совпасть с manifest.json)
+python3 generate.py --set probe --format v2 --out /tmp/p2.jsonl  # воспроизвести набор v2 байт в байт
 python3 generate.py --set probe --format v1 --out /tmp/p1.jsonl  # воспроизвести набор v1 байт в байт
-python3 score.py --cases data/probe-v2.jsonl --pred predictions.jsonl --ref reference.jsonl --out report.json  # decision_agreement — основная метрика пробы
+python3 score.py --cases data/probe-v3.jsonl --pred predictions.jsonl --ref reference.jsonl --out report.json  # decision_agreement — основная метрика пробы
 ```
 
 ## Запуск раннера
@@ -42,7 +44,7 @@ export OPENROUTER_API_KEY=...                                              # т�
 python3 run.py --profile inceptron-fp8 --set dev --limit 10           # небольшой пробный прогон
 python3 run.py --profile inceptron-fp8 --set probe                    # -> runs/<profile>/probe-<run_id>.jsonl (+ .meta.json)
 python3 run.py --profile inceptron-fp8 --set probe --resume runs/inceptron-fp8/probe-<run_id>.jsonl
-python3 run.py --profile inceptron-fp8 --set probe --reference        # эталон -> refs/<profile>/probe-v2-<дата>-<run_id>.jsonl (версия — из файла набора), 0444
+python3 run.py --profile inceptron-fp8 --set probe --reference        # эталон -> refs/<profile>/probe-v3-<дата>-<run_id>.jsonl (версия — из файла набора), 0444
 python3 -B calibrate.py update --profile inceptron-fp8                    # точка калибровки по новым прогонам probe
 python3 -B calibrate.py freeze --profile inceptron-fp8                    # заморозить базу (≥ 20 точек, по утверждению)
 python3 -B -m unittest -v test_format_v2 test_calibrate test_run test_run_audit test_run_fixes  # все тесты (без сети)

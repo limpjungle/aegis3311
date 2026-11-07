@@ -9,6 +9,9 @@ import (
 // Verify на произвольном вводе не паникует, а принятая цепочка подписана ключом из keyring.
 func FuzzVerify(f *testing.F) {
 	path, _, k, w := writeChainF(f)
+	if _, err := w.AppendEvent(validEvent("router_halted")); err != nil { // смешанная цепочка: записи и события
+		f.Fatal(err)
+	}
 	w.Close()
 	b, err := os.ReadFile(path)
 	if err != nil {

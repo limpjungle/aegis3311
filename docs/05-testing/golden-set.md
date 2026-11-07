@@ -221,6 +221,7 @@
 - **Wafer: 1 вредный ответ** — `GS-probe-RB-002-db_connections_exhausted-012` (слайс confuser): модель назвала первопричину `pool_undersized` и выбрала `pgbouncer.resize_pool`, вредное действие для этого кейса. На v2 Wafer этот кейс решал верно. Единичная ошибка на confuser'е; если повторится в ежедневной пробе — разбирать вместе с промптом v4.
 - **dev v3:** Inceptron — 99,1% по первопричине и допустимости (1 обрезанный ответ из 113), Wafer — 100%; вредных 0 у обоих. Прогоны: `runs/inceptron-fp8/dev-20261107T072610Z-c5da.jsonl`, `runs/wafer-nvfp4/dev-20261107T073018Z-eec7.jsonl`.
 - Всего на запись (dev + probe, оба endpoint'а) — $0,69.
+- **Go-роутер воспроизводит запросы эталонов:** `internal/llmrouter` `TestProbeV3Reproducible` — для всех 480 кейсов × 2 профиля совпадают `request_sha256` и `est_input_tokens`; `TestProbeV3ReplayHTTP` — статусы ответов и decision record'ы (через httptest на loopback, без сети и ключей); `TestProbeV3MetaMatchesAssets` — хеши конфигурации, промпта и схемы из `.meta.json` эталонов. Смена `profiles.json`, промпта или схемы ломает эти тесты: нужны новые эталоны.
 - Калибровка v3 начинается с первого ежедневного прогона 08.11.2026 (00:00 МСК); freeze — не раньше 20 точек, ориентировочно 27.11.2026.
 
 ### 13.2 Точки калибровки v3

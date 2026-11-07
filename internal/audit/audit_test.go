@@ -54,9 +54,14 @@ func shadowRecord(t testing.TB, verdict string) *DecisionRecord {
 		Mode:       ModeShadow,
 		Incident:   IncidentRef{ID: "inc-42", Class: "RB-001", Service: "geo-svc", Environment: "staging"},
 		Initiator:  Actor{Kind: "agent", ID: "agent-staging-1"},
+		LLM: &LLMInfo{Mode: "hybrid", Outcome: "sent", DataClass: "internal", Backend: "openrouter", Jurisdiction: "US",
+			Sources: []string{"metrics.prometheus"}, Masker: "test/1", ExcludedFragments: []FragmentRef{}, DroppedFragments: []FragmentRef{},
+			EstInputTokens: 5300},
 		Model: &ModelInfo{Profile: "inceptron-fp8", Slug: "z-ai/glm-5.3-flash-20260826", Reported: "z-ai/glm-5.3-flash",
-			Provider: "Inceptron", EndpointTag: "inceptron/fp8", Quantization: "fp8"},
-		Prompt:        &PromptInfo{SystemSHA256: h('a'), InputSHA256: h('b'), AnswerSchema: "answer.schema-v2.json", InputTokens: 5300},
+			Provider: "Inceptron", EndpointTag: "inceptron/fp8", EndpointRole: "primary", Quantization: "fp8",
+			RequestFlags: ProviderFlags{ZDR: true, DataCollection: "deny"}},
+		Prompt: &PromptInfo{SystemSHA256: h('a'), InputSHA256: h('b'), RequestSHA256: h('d'), AnswerSchema: "answer.schema-v2.json",
+			AnswerSchemaSHA256: h('e'), InputTokens: 5300},
 		RetrievedDocs: []string{"runbook/RB-001@3f2c"},
 		Answer:        &AnswerInfo{Status: "ok", SHA256: h('c'), Body: json.RawMessage(`{"incident_class":"RB-001"}`)},
 		Verdict:       v,
@@ -367,15 +372,20 @@ func TestValidate(t *testing.T) {
 		"уровень не равен вердикту": func(r *DecisionRecord) {
 			r.AutonomyLevel = map[string]string{"L0": "L1", "L1": "L2", "L2": "L3", "L3": "L0"}[r.AutonomyLevel]
 		},
-		"без вердикта выше L0":      func(r *DecisionRecord) { r.Verdict = nil; r.AutonomyLevel = "L1" },
-		"ok без тела":               func(r *DecisionRecord) { r.Answer.Body = nil },
-		"truncated с телом":         func(r *DecisionRecord) { r.Answer.Status = "truncated" },
-		"плохой хеш промпта":        func(r *DecisionRecord) { r.Prompt.SystemSHA256 = "abc" },
-		"model без prompt":          func(r *DecisionRecord) { r.Prompt = nil },
-		"answer без model":          func(r *DecisionRecord) { r.Model, r.Prompt = nil, nil },
-		"retrieved_docs nil":        func(r *DecisionRecord) { r.RetrievedDocs = nil },
-		"ID документа с пробелом":   func(r *DecisionRecord) { r.RetrievedDocs = []string{"a b"} },
-		"dropped без truncated":     func(r *DecisionRecord) { r.Prompt.DroppedFragments = 2 },
+		"без вердикта выше L0": func(r *DecisionRecord) { r.Verdict = nil; r.AutonomyLevel = "L1" },
+		"ok без тела":          func(r *DecisionRecord) { r.Answer.Body = nil },
+		"truncated с телом":    func(r *DecisionRecord) { r.Answer.Status = "truncated" },
+		"плохой хеш промпта":   func(r *DecisionRecord) { r.Prompt.SystemSHA256 = "abc" },
+		"model без prompt":     func(r *DecisionRecord) { r.Prompt = nil },
+		"answer без model": func(r *DecisionRecord) {
+			r.Model, r.Prompt = nil, nil
+			r.LLM = &LLMInfo{Mode: "off", Reason: "mode_off", Outcome: "not_sent"}
+		},
+		"retrieved_docs nil":      func(r *DecisionRecord) { r.RetrievedDocs = nil },
+		"ID документа с пробелом": func(r *DecisionRecord) { r.RetrievedDocs = []string{"a b"} },
+		"dropped без truncated": func(r *DecisionRecord) {
+			r.LLM.DroppedFragments = []FragmentRef{{ID: "f1", Source: "metrics.prometheus", Class: "internal", Reason: "context_ceiling"}}
+		},
 		"инициатор":                 func(r *DecisionRecord) { r.Initiator.Kind = "llm" },
 		"live L2 без lease":         func(r *DecisionRecord) { r.Mode = ModeLive; r.Verdict.EffectiveLevel = "L2"; r.AutonomyLevel = "L2" },
 		"lease с нулевым fencing":   func(r *DecisionRecord) { r.Mode = ModeLive; r.Lease = &LeaseRef{ID: "l1"} },
@@ -393,6 +403,7 @@ func TestValidate(t *testing.T) {
 	// LLM выключен: без model, prompt и answer, L0 по вердикту.
 	off := shadowRecord(t, "noop_requested_l0")
 	off.Model, off.Prompt, off.Answer = nil, nil, nil
+	off.LLM = &LLMInfo{Mode: "off", Outcome: "not_sent", Reason: "mode_off"}
 	if err := off.Validate(); err != nil {
 		t.Errorf("запись без LLM: %v", err)
 	}
@@ -409,6 +420,9 @@ func TestValidate(t *testing.T) {
 // Запись детерминирована: одинаковый record даёт одинаковый record_sha256 независимо от порядка заполнения map.
 func TestRecordHashDeterministic(t *testing.T) {
 	r := shadowRecord(t, "downgrade_scale_in_prod")
+	n, c := int64(10), 0.25
+	r.Answer.Usage = &Usage{PromptTokens: &n, CostReported: &c, ChargedTokens: 10, CostUSD: 0.5}
+	r.Answer.SchemaErrors = []string{}
 	a, _ := json.Marshal(r)
 	var back DecisionRecord
 	if err := strictjson.Decode(a, &back); err != nil {

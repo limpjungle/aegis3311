@@ -1,7 +1,7 @@
-// Команда aegis-audit: ключи, запись и проверка цепочки decision record'ов.
+// Команда aegis-audit: ключи, запись и проверка цепочки decision record'ов и событий роутера.
 //
 //	aegis-audit keygen     -priv KEY.pem -pub KEY.pub.pem
-//	aegis-audit append     -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] < record.json
+//	aegis-audit append     -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] < record.json | event.json
 //	aegis-audit verify     -chain FILE -pub PUB.pem [-pub ...] [-id CHAIN_ID] [-anchor DIR]
 //	aegis-audit checkpoint -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] -anchor DIR
 //
@@ -112,11 +112,27 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		if err != nil {
 			return usage(err)
 		}
-		var rec audit.DecisionRecord
-		if err := strictjson.Decode(raw, &rec); err != nil {
-			return rejected(fmt.Errorf("decision record: %w", err))
+		var peek struct {
+			Schema string `json:"schema"`
 		}
-		e, err := w.Append(&rec)
+		_ = json.Unmarshal(raw, &peek) // дубли и неизвестные поля ловит strictjson.Decode ниже
+		var e audit.Entry
+		switch peek.Schema {
+		case audit.RecordSchema:
+			var rec audit.DecisionRecord
+			if err := strictjson.Decode(raw, &rec); err != nil {
+				return rejected(fmt.Errorf("decision record: %w", err))
+			}
+			e, err = w.Append(&rec)
+		case audit.RouterEventSchema:
+			var ev audit.RouterEvent
+			if err := strictjson.Decode(raw, &ev); err != nil {
+				return rejected(fmt.Errorf("router event: %w", err))
+			}
+			e, err = w.AppendEvent(&ev)
+		default:
+			return rejected(fmt.Errorf("неизвестная схема записи %q", peek.Schema))
+		}
 		if err != nil {
 			return rejected(err)
 		}
@@ -134,7 +150,8 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			return usage(err)
 		}
 		defer f.Close()
-		opts := audit.VerifyOptions{ChainID: id}
+		var stats audit.VerifyStats
+		opts := audit.VerifyOptions{ChainID: id, Stats: &stats}
 		if anchor != "" {
 			if id == "" {
 				return usage(errors.New("verify: с -anchor нужен -id"))
@@ -149,8 +166,10 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		}
 		return printJSON(out, struct {
 			audit.Head
-			Checkpoints int `json:"checkpoints_checked"`
-		}{head, len(opts.Checkpoints)})
+			Checkpoints  int    `json:"checkpoints_checked"`
+			Records      uint64 `json:"records"`
+			RouterEvents uint64 `json:"router_events"`
+		}{head, len(opts.Checkpoints), stats.Records, stats.RouterEvents})
 	default:
 		return usage(fmt.Errorf("неизвестная команда %q", args[0]))
 	}

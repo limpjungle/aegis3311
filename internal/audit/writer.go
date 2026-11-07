@@ -16,7 +16,7 @@ import (
 // ErrWriterFailed — Writer остановлен после ошибки записи (fail-closed). Нужна проверка и ручной разбор файла.
 var ErrWriterFailed = errors.New("запись аудита остановлена после ошибки")
 
-// Writer добавляет decision record'ы в файл цепочки (JSONL, только дописывание).
+// Writer добавляет decision record'ы и события роутера в файл цепочки (JSONL, только дописывание).
 // Один писатель на файл: при открытии берётся эксклюзивная блокировка (flock).
 type Writer struct {
 	mu     sync.Mutex
@@ -75,10 +75,8 @@ func (w *Writer) Head() Head {
 // Append проверяет запись, добавляет её в цепочку и делает fsync. Ошибка возвращается до того, как
 // решение может считаться записанным; после ошибки ввода-вывода Writer больше ничего не принимает.
 func (w *Writer) Append(rec *DecisionRecord) (Entry, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.failed != nil {
-		return Entry{}, fmt.Errorf("%w: %v", ErrWriterFailed, w.failed)
+	if err := w.usable(); err != nil {
+		return Entry{}, err
 	}
 	if err := rec.Validate(); err != nil {
 		return Entry{}, fmt.Errorf("decision record: %w", err)
@@ -86,6 +84,40 @@ func (w *Writer) Append(rec *DecisionRecord) (Entry, error) {
 	body, err := json.Marshal(rec)
 	if err != nil {
 		return Entry{}, err
+	}
+	return w.appendBody(body)
+}
+
+// AppendEvent проверяет событие роутера и добавляет его в ту же цепочку (второй тип записи).
+func (w *Writer) AppendEvent(ev *RouterEvent) (Entry, error) {
+	if err := w.usable(); err != nil {
+		return Entry{}, err
+	}
+	if err := ev.Validate(); err != nil {
+		return Entry{}, fmt.Errorf("router event: %w", err)
+	}
+	body, err := json.Marshal(ev)
+	if err != nil {
+		return Entry{}, err
+	}
+	return w.appendBody(body)
+}
+
+func (w *Writer) usable() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return fmt.Errorf("%w: %v", ErrWriterFailed, w.failed)
+	}
+	return nil
+}
+
+// appendBody подписывает и записывает уже проверенное тело записи.
+func (w *Writer) appendBody(body []byte) (Entry, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return Entry{}, fmt.Errorf("%w: %v", ErrWriterFailed, w.failed)
 	}
 	e := Entry{Schema: EntrySchema, ChainID: w.head.ChainID, Seq: w.head.Seq + 1, PrevHash: w.head.Hash,
 		RecordSHA256: sha256Prefixed(body), KeyID: w.signer.KeyID(), Record: body}

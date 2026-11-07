@@ -22,7 +22,7 @@ func record(t *testing.T, id string) []byte {
 		"schema": "aegisops/decision-record/v1", "record_id": id, "recorded_at": "2026-11-07T12:00:00Z", "mode": "shadow",
 		"incident":  map[string]any{"id": "inc-1", "class": "RB-001", "service": "geo-svc", "environment": "prod"},
 		"initiator": map[string]any{"kind": "agent", "id": "agent-1"},
-		"model":     nil, "prompt": nil, "retrieved_docs": []string{}, "answer": nil,
+		"llm":       nil, "model": nil, "prompt": nil, "retrieved_docs": []string{}, "answer": nil,
 		"verdict": json.RawMessage(v), "autonomy_level": verdict["effective_level"],
 		"lease": nil, "post_check": nil, "trace_ref": "",
 	}
@@ -55,6 +55,12 @@ func TestCLI(t *testing.T) {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
+	ev := []byte(`{"schema":"aegisops/router-event/v1","event_id":"re-0123456789abcdef0123456789abcdef","recorded_at":"2026-11-07T12:00:00Z",` +
+		`"kind":"active_changed","endpoint":"","role":"","from":"inceptron-fp8","to":"wafer-nvfp4","reason":"consecutive_failures",` +
+		`"consecutive_failures":0,"stable_for_s":0,"model":"z-ai/glm-5.3-flash-20260826","initiator":{"kind":"system","id":"llm-router-1"}}`)
+	if err := run([]string{"append", "-chain", chain, "-id", "agent-1", "-key", priv}, bytes.NewReader(ev), &out); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
 	if err := run([]string{"checkpoint", "-chain", chain, "-id", "agent-1", "-key", priv, "-anchor", anchor}, nil, &out); err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
@@ -63,17 +69,27 @@ func TestCLI(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 	var res struct {
-		Seq         int `json:"seq"`
-		Checkpoints int `json:"checkpoints_checked"`
+		Seq          int `json:"seq"`
+		Checkpoints  int `json:"checkpoints_checked"`
+		Records      int `json:"records"`
+		RouterEvents int `json:"router_events"`
 	}
 	json.Unmarshal(out.Bytes(), &res)
-	if res.Seq != 3 || res.Checkpoints != 1 {
+	if res.Seq != 4 || res.Checkpoints != 1 || res.Records != 3 || res.RouterEvents != 1 {
 		t.Fatalf("verify: %s", out.String())
 	}
 	// Невалидная запись и лишнее поле — код 1, цепочка не меняется.
 	bad := bytes.Replace(record(t, "dr-4"), []byte(`"lease":null`), []byte(`"lease":{"id":"l-1","fencing_token":3}`), 1)
 	if c := code(run([]string{"append", "-chain", chain, "-id", "agent-1", "-key", priv}, bytes.NewReader(bad), &out)); c != 1 {
 		t.Fatalf("lease в shadow: код %d", c)
+	}
+	badEvent := bytes.Replace(ev, []byte(`"active_changed"`), []byte(`"nope"`), 1)
+	if c := code(run([]string{"append", "-chain", chain, "-id", "agent-1", "-key", priv}, bytes.NewReader(badEvent), &out)); c != 1 {
+		t.Fatalf("событие с неизвестным kind: код %d", c)
+	}
+	badSchema := bytes.Replace(record(t, "dr-6"), []byte(`"aegisops/decision-record/v1"`), []byte(`"x"`), 1)
+	if c := code(run([]string{"append", "-chain", chain, "-id", "agent-1", "-key", priv}, bytes.NewReader(badSchema), &out)); c != 1 {
+		t.Fatalf("неизвестная схема: код %d", c)
 	}
 	extra := bytes.Replace(record(t, "dr-5"), []byte(`{"answer"`), []byte(`{"x":1,"answer"`), 1)
 	if c := code(run([]string{"append", "-chain", chain, "-id", "agent-1", "-key", priv}, bytes.NewReader(extra), &out)); c != 1 {
@@ -82,7 +98,7 @@ func TestCLI(t *testing.T) {
 	// Усечение цепочки ловится checkpoint'ом.
 	b, _ := os.ReadFile(chain)
 	ls := bytes.SplitAfter(b, []byte("\n"))
-	os.WriteFile(chain, bytes.Join(ls[:2], nil), 0o640)
+	os.WriteFile(chain, bytes.Join(ls[:3], nil), 0o640)
 	if c := code(run([]string{"verify", "-chain", chain, "-pub", pub, "-id", "agent-1", "-anchor", anchor}, nil, &out)); c != 1 {
 		t.Fatalf("усечение: код %d", c)
 	}

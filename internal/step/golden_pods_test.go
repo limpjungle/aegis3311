@@ -47,3 +47,21 @@ func TestStateFromGoldenInputPodsEdgeCases(t *testing.T) {
 		t.Errorf("порядок подов: %v", s.Pods)
 	}
 }
+
+// service.insufficient_data_policy переносится в TargetState; без поля — nil.
+func TestStateFromGoldenInputInsufficientDataPolicy(t *testing.T) {
+	s, err := StateFromGoldenInput(json.RawMessage(`{"service":{"name":"a","namespace":"n","pods":[],"insufficient_data_policy":"hold"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.InsufficientDataPolicy == nil || *s.InsufficientDataPolicy != "hold" {
+		t.Errorf("InsufficientDataPolicy = %v, ожидалось hold", s.InsufficientDataPolicy)
+	}
+	s, err = StateFromGoldenInput(json.RawMessage(`{"service":{"name":"a","namespace":"n","pods":[]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.InsufficientDataPolicy != nil {
+		t.Errorf("InsufficientDataPolicy = %v, ожидался nil", *s.InsufficientDataPolicy)
+	}
+}

@@ -180,6 +180,7 @@ func TestAssembleMatchesGolden(t *testing.T) {
 		}
 		var cov v4Coverage
 		var cov5 v5Coverage
+		withPolicy := 0
 		for _, c := range cases {
 			id := c.Get("id").S
 			in := c.Get("input")
@@ -200,6 +201,9 @@ func TestAssembleMatchesGolden(t *testing.T) {
 			}
 			if a, _ := json.Marshal(st); !bytes.Equal(a, mustJSON(t, want)) {
 				t.Fatalf("%s: TargetState %s != %s", id, a, mustJSON(t, want))
+			}
+			if st.InsufficientDataPolicy != nil {
+				withPolicy++
 			}
 			seen := map[string]bool{}
 			for _, sec := range req.Sections {
@@ -223,6 +227,9 @@ func TestAssembleMatchesGolden(t *testing.T) {
 					t.Fatalf("%s: нет секции %q", id, m.Key)
 				}
 			}
+		}
+		if withPolicy == 0 {
+			t.Errorf("%s: ни у одного кейса нет политики сервиса при недостатке данных", f.file)
 		}
 		if strings.HasSuffix(f.file, "-v4.jsonl") || strings.HasSuffix(f.file, "-v5.jsonl") {
 			cov.require(t, f.file)

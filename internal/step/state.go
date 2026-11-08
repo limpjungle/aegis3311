@@ -50,6 +50,9 @@ type TargetState struct {
 	Pods       []string    `json:"pods"`
 	Rollout    *Rollout    `json:"rollout"`
 	DB         *DB         `json:"db"`
+	// InsufficientDataPolicy — политика сервиса при недостатке данных canary (hold | rollback | human) из реестра
+	// сервисов; nil — не задана. Правила шага её не используют; её читает PEP для отката insufficient_data_policy.
+	InsufficientDataPolicy *string `json:"insufficient_data_policy,omitempty"`
 }
 
 // Validate проверяет только то, без чего правила дают бессмысленный результат: целые >= 0 и вид autoscaler'а.

@@ -214,6 +214,42 @@ func (c goldenCase) verdictUnsupported(p pep.Proposal) bool {
 	return p.Params.Reason == nil || rollbackSupportedBy[*p.Params.Reason] != verdict
 }
 
+// policyOf — политика сервиса при недостатке данных; "" — не задана.
+func policyOf(s step.TargetState) string {
+	if s.InsufficientDataPolicy == nil {
+		return ""
+	}
+	return *s.InsufficientDataPolicy
+}
+
+// dataPolicyRule — исход правила политики сервиса при недостатке данных (зеркало guards.rego):
+// "" — не срабатывает (не откат, другая причина, политика rollback); "deny" — insufficient_data_hold (hold);
+// "cap" — insufficient_data_policy (human, не задана, неизвестная).
+func (c goldenCase) dataPolicyRule(p pep.Proposal) string {
+	if p.Type != "rollout.abort_and_rollback" || p.Params.Reason == nil || *p.Params.Reason != "insufficient_data_policy" {
+		return ""
+	}
+	policy := ""
+	if c.state.InsufficientDataPolicy != nil {
+		policy = *c.state.InsufficientDataPolicy
+	}
+	switch policy {
+	case "rollback":
+		return ""
+	case "hold":
+		return "deny"
+	}
+	return "cap"
+}
+
+// requireDeny проверяет запрет отката: deny, L0, указанная причина deny.
+func requireDeny(v pep.Verdict, code string) string {
+	if v.Decision != "deny" || v.EffectiveLevel != "L0" || !hasReason(v.Reasons, "deny:"+code) {
+		return "вердикт " + v.Decision + "/" + v.EffectiveLevel + ", ожидалось deny/L0 с причиной " + code
+	}
+	return ""
+}
+
 // requireCap проверяет понижение отката: downgrade, L1, указанный cap, ни одного deny.
 func requireCap(v pep.Verdict, code string) string {
 	for _, r := range v.Reasons {
@@ -285,9 +321,17 @@ func TestGoldenSetPEP(t *testing.T) {
 		cases   int
 		missing int // откатов без анализа среди acceptable
 		verdict int // допустимых откатов, где вердикт анализа не подтверждает причину (crashloop при error)
-	}{{"probe", 635, 10, 10}, {"dev", 147, 2, 2}, {"probe-v4", 595, 10, 0}, {"dev-v4", 138, 2, 0}} {
+		// допустимых откатов insufficient_data_policy (политика сервиса у них rollback)
+		dataRollback int
+		// по enum причин отката: откатов insufficient_data_policy при политике hold / human (при любых вердиктах)
+		held, human int
+		// по enum причин отката: insufficient_data_policy при вердикте inconclusive, политика rollback / hold / human
+		idAllow, idHold, idHuman int
+	}{{"probe", 635, 10, 10, 7, 156, 41, 7, 8, 10}, {"dev", 147, 2, 2, 2, 40, 7, 2, 2, 2},
+		{"probe-v4", 595, 10, 0, 7, 139, 29, 7, 8, 10}, {"dev-v4", 138, 2, 0, 2, 35, 5, 2, 2, 2}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad, checked, unavailable, missing, verdict, capped := 0, 0, 0, 0, 0, 0
+			dataRollback, held, human, idAllow, idHold, idHuman := 0, 0, 0, 0, 0, 0
 			fail := func(format string, a ...any) {
 				if bad++; bad <= 20 {
 					t.Errorf(format, a...)
@@ -321,6 +365,15 @@ func TestGoldenSetPEP(t *testing.T) {
 					} else if hasReason(v.Reasons, "cap:analysis_verdict") {
 						fail("%s: analysis_verdict при подтверждающем вердикте: %+v", c.ID, v.Reasons)
 					}
+					if p.Type == "rollout.abort_and_rollback" && p.Params.Reason != nil && *p.Params.Reason == "insufficient_data_policy" {
+						dataRollback++
+					}
+					if rule := c.dataPolicyRule(p); rule != "" {
+						fail("%s: допустимый откат при политике %v: %+v", c.ID, *c.state.InsufficientDataPolicy, v.Reasons)
+					}
+					if hasReason(v.Reasons, "cap:insufficient_data_policy") || hasReason(v.Reasons, "deny:insufficient_data_hold") {
+						fail("%s: правило политики сервиса сработало на допустимом действии: %+v", c.ID, v.Reasons)
+					}
 					want, _ := c.allowed(acc.Type)["computed"].(map[string]any)
 					gotB, _ := json.Marshal(v.Action.Computed)
 					var got map[string]any
@@ -341,13 +394,46 @@ func TestGoldenSetPEP(t *testing.T) {
 						reason := r.(string)
 						p := pep.Proposal{Type: "rollout.abort_and_rollback", Params: pep.ModelParams{Reason: &reason}}
 						v := eng.Evaluate(context.Background(), p, ctx)
-						if c.verdictUnsupported(p) {
-							capped++
-							if msg := requireCap(v, "analysis_verdict"); msg != "" {
+						rule, unsupported := c.dataPolicyRule(p), c.verdictUnsupported(p)
+						if reason == "insufficient_data_policy" && c.state.Rollout != nil && c.state.Rollout.AnalysisVerdict == "inconclusive" {
+							switch policyOf(c.state) {
+							case "rollback":
+								idAllow++
+							case "hold":
+								idHold++
+							case "human":
+								idHuman++
+							}
+						}
+						switch rule {
+						case "deny":
+							held++
+							if msg := requireDeny(v, "insufficient_data_hold"); msg != "" {
 								fail("%s: откат %s: %s %+v", c.ID, reason, msg, v.Reasons)
 							}
-						} else if v.Decision != "allow" {
-							fail("%s: откат %s при подтверждающем вердикте: %s %+v", c.ID, reason, v.Decision, v.Reasons)
+							if hasReason(v.Reasons, "cap:analysis_verdict") != unsupported {
+								fail("%s: откат %s при политике hold: cap analysis_verdict не соответствует вердикту: %+v", c.ID, reason, v.Reasons)
+							}
+						case "cap":
+							human++
+							if msg := requireCap(v, "insufficient_data_policy"); msg != "" {
+								fail("%s: откат %s: %s %+v", c.ID, reason, msg, v.Reasons)
+							}
+							if hasReason(v.Reasons, "cap:analysis_verdict") != unsupported {
+								fail("%s: откат %s при политике human: cap analysis_verdict не соответствует вердикту: %+v", c.ID, reason, v.Reasons)
+							}
+						default:
+							if hasReason(v.Reasons, "cap:insufficient_data_policy") || hasReason(v.Reasons, "deny:insufficient_data_hold") {
+								fail("%s: откат %s: лишнее правило политики сервиса: %+v", c.ID, reason, v.Reasons)
+							}
+							if unsupported {
+								capped++
+								if msg := requireCap(v, "analysis_verdict"); msg != "" {
+									fail("%s: откат %s: %s %+v", c.ID, reason, msg, v.Reasons)
+								}
+							} else if v.Decision != "allow" {
+								fail("%s: откат %s при подтверждающем вердикте: %s %+v", c.ID, reason, v.Decision, v.Reasons)
+							}
 						}
 					}
 				}
@@ -375,11 +461,23 @@ func TestGoldenSetPEP(t *testing.T) {
 			if verdict != set.verdict {
 				t.Errorf("допустимых откатов с неподтверждающим вердиктом %d, ожидалось %d", verdict, set.verdict)
 			}
+			for _, chk := range []struct {
+				name      string
+				got, want int
+			}{{"допустимых откатов insufficient_data_policy", dataRollback, set.dataRollback}, {"откатов insufficient_data_policy при hold по enum", held, set.held},
+				{"откатов insufficient_data_policy при human по enum", human, set.human}, {"insufficient_data_policy/inconclusive при rollback", idAllow, set.idAllow},
+				{"insufficient_data_policy/inconclusive при hold", idHold, set.idHold}, {"insufficient_data_policy/inconclusive при human", idHuman, set.idHuman}} {
+				if chk.got != chk.want {
+					t.Errorf("%s: %d, ожидалось %d", chk.name, chk.got, chk.want)
+				}
+			}
 			if capped == 0 {
 				t.Error("ни одного отката с неподтверждающим вердиктом по enum причин: проверка ничего не покрыла")
 			}
 			t.Logf("%s: acceptable=%d, недоступных проверено=%d, откатов без анализа=%d, с неподтверждающим вердиктом=%d (по enum %d), ошибок=%d",
 				set.name, checked, unavailable, missing, verdict, capped, bad)
+			t.Logf("%s: откатов insufficient_data_policy среди acceptable=%d, по enum: hold=%d, human=%d, inconclusive rollback/hold/human=%d/%d/%d",
+				set.name, dataRollback, held, human, idAllow, idHold, idHuman)
 		})
 	}
 }
@@ -402,6 +500,7 @@ func TestRefAnswersNoPanic(t *testing.T) {
 		t.Skip("нет refs")
 	}
 	total, missing, verdict := 0, 0, 0
+	refData, refHeld, refHuman := 0, 0, 0
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -444,6 +543,25 @@ func TestRefAnswersNoPanic(t *testing.T) {
 					t.Errorf("%s: откат при неподтверждающем вердикте: %s %+v", line.ID, msg, v.Reasons)
 				}
 			}
+			if p.Type == "rollout.abort_and_rollback" && p.Params.Reason != nil && *p.Params.Reason == "insufficient_data_policy" && !c.noAnalysis(p.Type) {
+				switch c.dataPolicyRule(p) {
+				case "deny":
+					refHeld++
+					if msg := requireDeny(v, "insufficient_data_hold"); msg != "" {
+						t.Errorf("%s: откат при политике hold: %s %+v", line.ID, msg, v.Reasons)
+					}
+				case "cap":
+					refHuman++
+					if msg := requireCap(v, "insufficient_data_policy"); msg != "" {
+						t.Errorf("%s: откат при политике human: %s %+v", line.ID, msg, v.Reasons)
+					}
+				default:
+					refData++
+					if v.Decision != "allow" {
+						t.Errorf("%s: откат insufficient_data_policy при политике rollback: %s %+v", line.ID, v.Decision, v.Reasons)
+					}
+				}
+			}
 		}
 	}
 	if total == 0 {
@@ -457,5 +575,11 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	if verdict != 20 {
 		t.Errorf("откатов при неподтверждающем вердикте в ответах %d, ожидалось 20", verdict)
 	}
-	t.Logf("ответов проверено: %d, откатов без анализа: %d, при неподтверждающем вердикте: %d", total, missing, verdict)
+	// insufficient_data при политике rollback: 7 откатов у каждого из двух профилей в эталонах v2–v5;
+	// при hold/human эталоны не откатывали
+	if refData != 56 || refHeld != 0 || refHuman != 0 {
+		t.Errorf("откатов insufficient_data_policy в ответах: rollback %d, hold %d, human %d; ожидалось 56, 0, 0", refData, refHeld, refHuman)
+	}
+	t.Logf("ответов проверено: %d, откатов без анализа: %d, при неподтверждающем вердикте: %d, insufficient_data_policy: %d/%d/%d",
+		total, missing, verdict, refData, refHeld, refHuman)
 }

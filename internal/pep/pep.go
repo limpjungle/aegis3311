@@ -341,6 +341,11 @@ func (e *Engine) policyInput(entry *catalog.Entry, kind string, computed map[str
 	if r := c.State.Rollout; r != nil {
 		verdict = r.AnalysisVerdict
 	}
+	// Политика сервиса при недостатке данных canary; "" — не задана.
+	policy := ""
+	if p := c.State.InsufficientDataPolicy; p != nil {
+		policy = *p
+	}
 	f := c.Flags
 	actions := f.KillSwitch.Actions
 	if actions == nil {
@@ -356,7 +361,8 @@ func (e *Engine) policyInput(entry *catalog.Entry, kind string, computed map[str
 			"params":   params,
 		},
 		"target": map[string]any{"environment": *c.Environment, "namespace": *c.Namespace,
-			"namespace_labels": c.NamespaceLabels, "kind": kind, "analysis_verdict": verdict},
+			"namespace_labels": c.NamespaceLabels, "kind": kind, "analysis_verdict": verdict,
+			"insufficient_data_policy": policy},
 		"level": map[string]any{"granted": *c.Level.Level, "by_data": *c.Level.ByData},
 		"flags": map[string]any{
 			"kill_switch":        map[string]any{"global": *f.KillSwitch.Global, "cluster": *f.KillSwitch.Cluster, "actions": actions},

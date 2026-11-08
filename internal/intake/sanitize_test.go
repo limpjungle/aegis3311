@@ -445,3 +445,17 @@ func TestAssemblePreviousAnalysisRunNotInTargetState(t *testing.T) {
 		}
 	}
 }
+
+// Политика сервиса при недостатке данных попадает в TargetState; без неё — nil.
+func TestTargetStateOfInsufficientDataPolicy(t *testing.T) {
+	_, s := rolloutSnapshot(t)
+	human := "human"
+	s.Topology.InsufficientDataPolicy = &human
+	if st := TargetStateOf(s); st.InsufficientDataPolicy == nil || *st.InsufficientDataPolicy != "human" {
+		t.Errorf("InsufficientDataPolicy = %v, ожидалось human", st.InsufficientDataPolicy)
+	}
+	s.Topology.InsufficientDataPolicy = nil
+	if st := TargetStateOf(s); st.InsufficientDataPolicy != nil {
+		t.Errorf("InsufficientDataPolicy = %v, ожидался nil", *st.InsufficientDataPolicy)
+	}
+}

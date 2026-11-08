@@ -380,9 +380,19 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 
 - это `cap`, а не `deny`: вердикт `downgrade` (или `noop`, если запрошен L0), нарушением G0 не является; G0 считает только `deny`;
 - RB-004 без анализа (`crashloop_no_current_analysis`) решается откатом по промпту, но PEP понижает его до L1: решает человек. Это сознательная цена защиты от отката по чужому вердикту;
-- `policy_revision` поднята до `0.2.0` (с cap `analysis_verdict` — `0.3.0`); эталоны вердиктов PEP перегенерированы (изменились только ревизия и digest-заглушки), добавлен кейс `cap_rollback_no_analysis`.
+- `policy_revision` поднята до `0.2.0` (с cap `analysis_verdict` — `0.3.0`, с политикой сервиса — `0.4.0`); эталоны вердиктов PEP перегенерированы (изменились только ревизия и digest-заглушки), добавлен кейс `cap_rollback_no_analysis`.
 
 **Cap `analysis_verdict` (08.11.2026).** Если анализ текущей ревизии есть, но его вердикт не подтверждает причину отката, откат тоже понижается до **L1**. Подтверждающие пары — `canary_degradation` и `bake_degradation` при `degradation`, `insufficient_data_policy` при `inconclusive` (`rollback_supported_by` в `guards.rego`). Всё остальное (`error`, `running`, `success`, пустой вердикт, перекрёстные пары, причина `null`) — решает человек. Для этого вердикт анализа добавлен в `step.TargetState` (`rollout.analysis_verdict`; заполняют `intake.TargetStateOf` и `step.StateFromGoldenInput`), а Go передаёт в политику `input.target.analysis_verdict` и параметры модели `input.action.params` (оба пути обязательны, иначе `input_invalid`). При пустом анализе срабатывает только `analysis_missing`. На golden-наборах: все допустимые откаты v4 проходят без cap; в v5 понижаются 10 / 2 отката `crashloop_analysis_error` (RB-004 при `error`), как и `crashloop_no_current_analysis`. Перебор всех причин отката из enum по каждому кейсу с анализом даёт cap ровно при неподтверждающем вердикте и ни одного `deny` (`TestGoldenSetPEP`); среди 3107 эталонных ответов v2–v4 откатов с неподтверждающим вердиктом нет.
+
+**Правило политики сервиса при недостатке данных (08.11.2026).** Откат с причиной `insufficient_data_policy` подчиняется `service.insufficient_data_policy` из реестра сервисов intake. Правило (`guards.rego`) срабатывает только для `rollout.abort_and_rollback` с этой причиной и не смотрит на анализ и вердикт:
+
+- `hold` — `deny` `insufficient_data_hold` (итог L0): владелец сервиса запретил откат при недостатке данных;
+- `rollback` — правило молчит;
+- `human`, политика не задана (Go передаёт `""`) и любое неизвестное значение — cap `insufficient_data_policy` до **L1** (fail-safe: решает человек).
+
+Двойные причины не гасятся: `analysis_missing` и `analysis_verdict` проверяют, подтверждают ли данные причину отката, новое правило — разрешил ли такой откат владелец. При `hold` в `reasons` может быть и cap `analysis_verdict` (deny важнее), при `human` — оба cap с итогом L1. Политика попадает в `step.TargetState.InsufficientDataPolicy` (`intake.TargetStateOf`, `step.StateFromGoldenInput`), Go передаёт её как `input.target.insufficient_data_policy` (строка, `""` при отсутствии); путь обязателен — без него (или при `null`) `input_invalid`. `policy_revision` — `0.4.0`. Добавлены кейсы вердиктов `deny_rollback_insufficient_data_hold` и `cap_rollback_insufficient_data_human`, остальные эталоны перегенерированы (изменилась только ревизия).
+
+На golden-наборах (`TestGoldenSetPEP`) допустимых откатов `insufficient_data_policy` — 7 / 2 / 7 / 2 (probe / dev / probe-v4 / dev-v4), у всех политика `rollback`, поэтому ни cap, ни deny не срабатывают. Перебор причин из enum даёт deny при `hold` (156 / 40 / 139 / 35) и cap при `human` (41 / 7 / 29 / 5) строго по правилу. Среди 56 откатов `insufficient_data_policy` в эталонных ответах v2–v5 политика всегда `rollback`, они проходят как `allow`.
 
 ### 16.3 Промпт v5
 
@@ -456,10 +466,11 @@ Dev-v5 (147 кейсов): 100% по первопричине и допусти�
 Открытые вопросы:
 
 1. ~~Intake отдаёт `error` при активном промпте v4~~ — закрыто переключением на v5 (§16.8); до него откат по `error` страховал cap `analysis_verdict` (§16.2).
-2. ~~PEP не страхует откат при вердикте `error`~~ — закрыто cap `analysis_verdict` (§16.2). Остаётся: при `inconclusive` PEP не знает `service.insufficient_data_policy`, поэтому откат `insufficient_data_policy` при политике `hold`/`human` проходит PEP (защита — промпт); для закрытия нужна политика сервиса в `TargetState`.
+2. ~~PEP не страхует откат при вердикте `error`~~ — закрыто cap `analysis_verdict` (§16.2). ~~Остаётся: при `inconclusive` PEP не знает `service.insufficient_data_policy`, поэтому откат `insufficient_data_policy` при политике `hold`/`human` проходит PEP~~ — закрыто правилом политики сервиса (§16.2, 08.11.2026).
 3. Семантику Argo `Error` при Progressing нужно проверить на живом кластере.
 4. threshold-форма Argo `Inconclusive` не покрыта набором.
 5. Проба дороже на 6,7%; калибровка v5 — с нуля при переключении (freeze сдвигается).
+6. **TODO (к следующей смене набора, v6):** убрать причину `insufficient_data_policy` из `enum` параметра `reason` отката в `allowed_actions`, если политика сервиса не `rollback` (`step.Available` и зеркало в `generate.py`, `allowed_actions_v2`). Тогда модель не сможет даже предложить такой откат, а PEP (`insufficient_data_hold` / `insufficient_data_policy`, §16.2) остаётся вторым рубежом. Меняет вход модели, поэтому требует набора v6, новых эталонов (≈ $1) и сброса калибровки — делать вместе с ближайшим изменением набора, не отдельно. Проверить: кросс-проверка `TestGoldenSetCrossCheck`, разметка кейсов `insufficient_data` при `hold`/`human` (откат исчезает из `allowed_actions`, а не только из `acceptable`), счётчики PEP-тестов.
 
 ### 16.8 Переключение на v5 (08.11.2026)
 

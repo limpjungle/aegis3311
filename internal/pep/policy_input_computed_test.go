@@ -40,3 +40,21 @@ func TestPolicyInputNilComputedIsEmptyObject(t *testing.T) {
 		t.Errorf("action.computed в JSON = %s (err %v), ожидалось {}: Rego не должен видеть null", raw, err)
 	}
 }
+
+func TestPolicyInputInsufficientDataPolicy(t *testing.T) {
+	cat := catalog.MustLoadEmbedded()
+	for _, tc := range []struct {
+		policy *string
+		want   string
+	}{{nil, ""}, {sp("hold"), "hold"}, {sp("human"), "human"}} {
+		cp := &capturePolicy{}
+		st := richState()
+		st.InsufficientDataPolicy = tc.policy
+		pep.New(cat, cp).Evaluate(context.Background(),
+			pep.Proposal{Type: "rollout.abort_and_rollback", Params: params(nil, nil, sp("insufficient_data_policy"), nil)}, permissive(st))
+		got, ok := cp.in["target"].(map[string]any)["insufficient_data_policy"].(string)
+		if !ok || got != tc.want {
+			t.Errorf("target.insufficient_data_policy = %#v, ожидалась строка %q", cp.in["target"].(map[string]any)["insufficient_data_policy"], tc.want)
+		}
+	}
+}

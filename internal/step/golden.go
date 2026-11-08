@@ -18,6 +18,7 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 			Database   *string     `json:"database"`
 			Autoscaler *Autoscaler `json:"autoscaler"`
 			Pods       *[]string   `json:"pods"`
+			Policy     *string     `json:"insufficient_data_policy"`
 		} `json:"service"`
 		Rollout *struct {
 			Name        *string `json:"name"`
@@ -36,7 +37,7 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 		return TargetState{}, fmt.Errorf("golden input: нет input.service.pods (набор старше v3)")
 	}
 	s := TargetState{Service: in.Service.Name, Namespace: in.Service.Namespace, Database: in.Service.Database,
-		Autoscaler: in.Service.Autoscaler, DB: in.DB, Pods: *in.Service.Pods}
+		Autoscaler: in.Service.Autoscaler, DB: in.DB, Pods: *in.Service.Pods, InsufficientDataPolicy: in.Service.Policy}
 	if r := in.Rollout; r != nil {
 		s.Rollout = &Rollout{Name: r.Name, Phase: r.Phase}
 		if r.AnalysisRun != nil {

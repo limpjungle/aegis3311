@@ -22,8 +22,9 @@ type GoldenCase struct {
 	Input struct {
 		AllowedActions json.RawMessage `json:"allowed_actions"`
 		Service        struct {
-			Pods       []string `json:"pods"`
-			Autoscaler struct {
+			Pods                   []string `json:"pods"`
+			InsufficientDataPolicy *string  `json:"insufficient_data_policy"`
+			Autoscaler             struct {
 				Replicas int `json:"replicas"`
 			} `json:"autoscaler"`
 		} `json:"service"`
@@ -252,6 +253,42 @@ func TestGoldenAnalysisVerdict(t *testing.T) {
 				t.Errorf("покрытие вердиктов: %v", seen)
 			}
 			t.Logf("%s: %v", set.name, seen)
+		})
+	}
+}
+
+// TestGoldenInsufficientDataPolicy: политика сервиса при недостатке данных переносится в TargetState как есть
+// (nil — поля нет во входе), значения только из {hold, rollback, human}.
+func TestGoldenInsufficientDataPolicy(t *testing.T) {
+	for _, set := range []struct {
+		name                          string
+		cases                         int
+		rollback, hold, human, absent int
+	}{{"probe", 635, 55, 198, 59, 323}, {"dev", 147, 14, 48, 12, 73}, {"probe-v4", 595, 44, 181, 47, 323}, {"dev-v4", 138, 12, 43, 10, 73}} {
+		t.Run(set.name, func(t *testing.T) {
+			seen := map[string]int{}
+			for _, c := range readGolden(t, set.name, set.cases) {
+				s, err := StateFromGoldenInput(c.RawInput)
+				if err != nil {
+					t.Fatalf("%s: %v", c.ID, err)
+				}
+				want := c.Input.Service.InsufficientDataPolicy
+				if (s.InsufficientDataPolicy == nil) != (want == nil) || (want != nil && *s.InsufficientDataPolicy != *want) {
+					t.Errorf("%s: политика в TargetState %v, во входе %v", c.ID, s.InsufficientDataPolicy, want)
+				}
+				if want == nil {
+					seen["absent"]++
+					continue
+				}
+				if v := *want; v != "hold" && v != "rollback" && v != "human" {
+					t.Errorf("%s: неизвестная политика %q", c.ID, v)
+				}
+				seen[*want]++
+			}
+			got := [4]int{seen["rollback"], seen["hold"], seen["human"], seen["absent"]}
+			if want := [4]int{set.rollback, set.hold, set.human, set.absent}; got != want {
+				t.Errorf("политики rollback/hold/human/нет поля = %v, ожидалось %v", got, want)
+			}
 		})
 	}
 }

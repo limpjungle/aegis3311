@@ -75,6 +75,8 @@ func richState() step.TargetState {
 		Rollout:    &step.Rollout{Name: sp("geo-svc"), Phase: "Progressing", AnalysisRun: "ar-1", AnalysisVerdict: "degradation"},
 		DB: &step.DB{PgBouncer: step.PgBouncer{Database: "geo", PoolSize: 50},
 			Postgres: step.Postgres{MaxConnections: 200, SuperuserReserved: 3, OtherPoolsTotal: 13, Headroom: 20}},
+		// rollback — правило политики сервиса не вмешивается; сценарии hold/human задают её явно.
+		InsufficientDataPolicy: sp("rollback"),
 	}
 }
 

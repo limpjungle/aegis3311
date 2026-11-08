@@ -1,0 +1,39 @@
+{
+ "schema": "aegisops/pep-verdict/v1",
+ "mode": "dry-run",
+ "decision": "deny",
+ "action": {
+  "type": "rollout.abort_and_rollback",
+  "version": "1.0.0",
+  "reversibility": "R1",
+  "params": {
+   "scope": null,
+   "pod_name": null,
+   "reason": "insufficient_data_policy",
+   "parameter": null
+  },
+  "computed": {
+   "analysis_run": "ar-1"
+  }
+ },
+ "target": {
+  "kind": "argoproj.io/Rollout",
+  "namespace": "shop",
+  "environment": "staging"
+ },
+ "requested_level": "L3",
+ "ceiling": "L3",
+ "effective_level": "L0",
+ "reasons": [
+  {
+   "code": "insufficient_data_hold",
+   "source": "policy",
+   "effect": "deny",
+   "detail": "политика сервиса hold: владелец запретил откат при недостатке данных canary"
+  }
+ ],
+ "catalog_digest": "<digest>",
+ "policy_bundle_digest": "<digest>",
+ "policy_revision": "0.4.0",
+ "input_digest": "<digest>"
+}

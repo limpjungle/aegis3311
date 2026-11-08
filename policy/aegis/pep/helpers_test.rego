@@ -19,6 +19,7 @@ base := {
 		"namespace_labels": {"aegisops.io/managed": "true"},
 		"kind": "autoscaling/HorizontalPodAutoscaler",
 		"analysis_verdict": "",
+		"insufficient_data_policy": "",
 	},
 	"level": {"granted": "L3", "by_data": false},
 	"flags": {

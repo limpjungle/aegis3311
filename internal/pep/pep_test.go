@@ -108,6 +108,42 @@ func TestEvaluate_Table(t *testing.T) {
 			mut: func(c *pep.Context) { c.State.Rollout.Phase = "Bake" }},
 		{name: "rollout insufficient_data_policy при inconclusive", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "allow", level: "L3", exact: true,
 			mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "inconclusive" }},
+		{name: "rollout idp, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("hold")
+			}},
+		{name: "rollout idp, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("human")
+			}},
+		{name: "rollout idp, политика не задана", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = nil
+			}},
+		{name: "rollout idp, неизвестная политика", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("yolo")
+			}},
+		{name: "rollout idp при degradation, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold", "cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout idp без анализа, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_missing", "cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = ""; c.State.InsufficientDataPolicy = sp("human") }},
+		{name: "rollout canary_degradation, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "allow", level: "L3",
+			codes: []string{}, exact: true, mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout bake_degradation, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("bake_degradation"), nil), want: "allow", level: "L3",
+			codes: []string{}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.Phase = "Bake"; c.State.InsufficientDataPolicy = sp("human") }},
+		{name: "scale_out, политика hold", typ: "workload.scale_out", want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout idp, политика hold, запрошен L0", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold"}, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("hold")
+				c.Level.Level = sp("L0")
+			}},
 		{name: "rollout при вердикте error", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
 			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "error" }},
 		{name: "rollout при вердикте running", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",

@@ -37,7 +37,7 @@ var Sections = []SectionSpec{
 func TargetStateOf(s Snapshot) step.TargetState {
 	t := s.Topology
 	st := step.TargetState{Service: t.Service, Namespace: t.Namespace, Database: t.Database, Autoscaler: t.Autoscaler,
-		Pods: append([]string{}, t.Pods...)}
+		Pods: append([]string{}, t.Pods...), InsufficientDataPolicy: t.InsufficientDataPolicy}
 	if r := s.Rollout.Value; r != nil {
 		st.Rollout = &step.Rollout{Name: r.Name, Phase: r.Phase}
 		// PreviousAnalysisRun сознательно игнорируется: computed.analysis_run — только анализ текущей ревизии.

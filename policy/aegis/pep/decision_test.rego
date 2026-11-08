@@ -5,7 +5,7 @@ test_decision_always_defined_on_empty_input if {
 	d.effective_level == "L0"
 	d.ceiling == "L0"
 	count(d.deny) > 0
-	d.policy_revision == "0.3.0"
+	d.policy_revision == "0.4.0"
 }
 
 test_decision_unknown_level if {
@@ -51,5 +51,17 @@ test_decision_deny_forces_l0_over_caps if {
 test_decision_ceiling_reported if {
 	inp := patched(array.concat(as_action("workload.restart", "R2", "frozen", "policy"), [["/target/environment", "prod-baremetal"], ["/level/granted", "L1"]]))
 	dec(inp).ceiling == "L2"
+	effective(inp) == "L1"
+}
+
+test_decision_insufficient_data_hold_l0 if {
+	inp := rollback_with_policy("insufficient_data_policy", "inconclusive", "hold")
+	d := dec(inp)
+	"insufficient_data_hold" in deny_codes(inp)
+	d.effective_level == "L0"
+}
+
+test_decision_insufficient_data_human_l1 if {
+	inp := rollback_with_policy("insufficient_data_policy", "inconclusive", "human")
 	effective(inp) == "L1"
 }

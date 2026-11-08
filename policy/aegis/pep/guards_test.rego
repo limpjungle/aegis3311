@@ -223,9 +223,24 @@ test_rollback_without_analysis_capped if {
 }
 
 # Откат с анализом: причина и вердикт текущего анализа.
-rollback_with(reason, verdict) := patched(array.concat(
+rollback_with_policy(reason, verdict, policy) := patched(array.concat(
 	as_action("rollout.abort_and_rollback", "R1", "allowed", "allowed"),
-	[["/action/computed", {"analysis_run": "ar-1"}], ["/action/params/reason", reason], ["/target/analysis_verdict", verdict]],
+	[
+		["/action/computed", {"analysis_run": "ar-1"}], ["/action/params/reason", reason],
+		["/target/analysis_verdict", verdict], ["/target/insufficient_data_policy", policy],
+	],
+))
+
+# Политика сервиса rollback — правило политики при недостатке данных не вмешивается.
+rollback_with(reason, verdict) := rollback_with_policy(reason, verdict, "rollback")
+
+# Откат без анализа текущей ревизии с заданной причиной и политикой сервиса.
+rollback_no_analysis_policy(reason, policy) := patched(array.concat(
+	as_action("rollout.abort_and_rollback", "R1", "allowed", "allowed"),
+	[
+		["/action/computed", {"analysis_run": ""}], ["/action/params/reason", reason],
+		["/target/analysis_verdict", ""], ["/target/insufficient_data_policy", policy],
+	],
 ))
 
 test_rollback_with_analysis_not_capped if {
@@ -264,7 +279,7 @@ test_analysis_verdict_only_rollback if {
 }
 
 test_missing_verdict_or_params_denied if {
-	every p in [["/target/analysis_verdict"], ["/action/params"]] {
+	every p in [["/target/analysis_verdict"], ["/target/insufficient_data_policy"], ["/action/params"]] {
 		inp := json.remove(base, p)
 		"input_invalid" in deny_codes(inp)
 	}
@@ -278,4 +293,71 @@ test_missing_computed_denied if {
 	inp := json.remove(base, ["/action/computed"])
 	"input_invalid" in deny_codes(inp)
 	effective(inp) == "L0"
+}
+
+test_insufficient_data_policy_null_denied if {
+	inp := patched([["/target/insufficient_data_policy", null]])
+	"input_invalid" in deny_codes(inp)
+	effective(inp) == "L0"
+}
+
+# ---------- политика сервиса при недостатке данных ----------
+
+# Строки: [причина, вердикт, политика, ожидаемые deny, ожидаемые caps, ожидаемый итог].
+data_policy_rows := [
+	["insufficient_data_policy", "inconclusive", "rollback", set(), set(), "L3"],
+	["insufficient_data_policy", "inconclusive", "hold", {"insufficient_data_hold"}, set(), "L0"],
+	["insufficient_data_policy", "inconclusive", "human", set(), {"insufficient_data_policy"}, "L1"],
+	["insufficient_data_policy", "inconclusive", "", set(), {"insufficient_data_policy"}, "L1"],
+	["insufficient_data_policy", "inconclusive", "yolo", set(), {"insufficient_data_policy"}, "L1"],
+	["insufficient_data_policy", "degradation", "rollback", set(), {"analysis_verdict"}, "L1"],
+	["insufficient_data_policy", "degradation", "hold", {"insufficient_data_hold"}, {"analysis_verdict"}, "L0"],
+	["insufficient_data_policy", "degradation", "human", set(), {"analysis_verdict", "insufficient_data_policy"}, "L1"],
+	["insufficient_data_policy", "error", "hold", {"insufficient_data_hold"}, {"analysis_verdict"}, "L0"],
+	["insufficient_data_policy", "error", "human", set(), {"analysis_verdict", "insufficient_data_policy"}, "L1"],
+	["insufficient_data_policy", "", "hold", {"insufficient_data_hold"}, {"analysis_verdict"}, "L0"],
+	["insufficient_data_policy", "", "human", set(), {"analysis_verdict", "insufficient_data_policy"}, "L1"],
+]
+
+test_insufficient_data_policy_matrix if {
+	every r in data_policy_rows {
+		inp := rollback_with_policy(r[0], r[1], r[2])
+		deny_codes(inp) == r[3]
+		cap_codes(inp) == r[4]
+		effective(inp) == r[5]
+	}
+}
+
+test_insufficient_data_policy_no_analysis if {
+	inp := rollback_no_analysis_policy("insufficient_data_policy", "hold")
+	deny_codes(inp) == {"insufficient_data_hold"}
+	cap_codes(inp) == {"analysis_missing"}
+	effective(inp) == "L0"
+	inp2 := rollback_no_analysis_policy("insufficient_data_policy", "human")
+	deny_codes(inp2) == set()
+	cap_codes(inp2) == {"analysis_missing", "insufficient_data_policy"}
+	effective(inp2) == "L1"
+	inp3 := rollback_no_analysis_policy("insufficient_data_policy", "rollback")
+	deny_codes(inp3) == set()
+	cap_codes(inp3) == {"analysis_missing"}
+}
+
+test_other_reasons_ignore_data_policy if {
+	every rp in [
+		["canary_degradation", "hold"], ["canary_degradation", "human"], ["canary_degradation", ""], ["canary_degradation", "rollback"],
+		["bake_degradation", "hold"], ["bake_degradation", "human"], ["bake_degradation", ""], ["bake_degradation", "rollback"],
+		[null, "hold"], [null, "human"], [null, ""], [null, "rollback"],
+	] {
+		inp := rollback_with_policy(rp[0], "degradation", rp[1])
+		not "insufficient_data_hold" in deny_codes(inp)
+		not "insufficient_data_policy" in cap_codes(inp)
+	}
+}
+
+test_data_policy_only_rollback if {
+	every policy in ["hold", "human"] {
+		inp := patched([["/action/params/reason", "insufficient_data_policy"], ["/target/insufficient_data_policy", policy]])
+		deny_codes(inp) == set()
+		cap_codes(inp) == set()
+	}
 }

@@ -1,0 +1,46 @@
+{
+ "created_at": "2026-11-08T21:56:20Z",
+ "ewma": {},
+ "frozen": null,
+ "points": [
+  {
+   "after_freeze": false,
+   "file": "runs/inceptron-fp8/probe-20261108T210628Z-1e5e.jsonl",
+   "findings": [],
+   "finished_at": "2026-11-08T21:28:13Z",
+   "metrics": {
+    "admissible": 100.0,
+    "decision_agreement": 95.59,
+    "harmful": 0.0,
+    "root_cause_match": 100.0,
+    "truncated_share": 0.0
+   },
+   "n_cases": 635,
+   "run_id": "20261108T210628Z-1e5e",
+   "verdict": "OK"
+  }
+ ],
+ "profile": "inceptron-fp8",
+ "reference": {
+  "file": "refs/inceptron-fp8/probe-v5-20261108-20261108T131132Z-e56c.jsonl",
+  "hashes": {
+   "config": "3f78d6d5b9274cd86538ab491b38047ada12e0614b65f8903cc9492a2fb3da47",
+   "manifest": "a7bc86bf4cdb3b7a8d35133f2dc4eb036e13a4acbe8104d72d1338d71e315cd9",
+   "prompt": "c66a8c6dbb620a96be882a9b979df639dc17a9c6c8c6aecace18e6f6ee809ebc",
+   "runner": "dc94f5e65d18565323ad951b59757c70983ebdae31b0e81c6a728cbd7c8b47bc",
+   "schema": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850",
+   "set": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde"
+  },
+  "run_id": "20261108T131132Z-e56c",
+  "sha256": "3c129962c3612c18ee8f30e857aa8f7140c6eafa4d7dba82d43d7a56e6bd315e"
+ },
+ "reference_levels": {
+  "admissible": 99.84,
+  "decision_agreement": 99.843,
+  "harmful": 0.0,
+  "root_cause_match": 99.84,
+  "truncated_share": 0.157
+ },
+ "set_sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
+ "updated_at": "2026-11-08T21:56:20Z"
+}

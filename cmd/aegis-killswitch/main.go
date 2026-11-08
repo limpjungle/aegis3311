@@ -7,19 +7,26 @@
 //	aegis-killswitch publish -config FILE -in FILE [-channels configmap,oob]
 //	aegis-killswitch renew   -config FILE -key KEY.pem [-channels configmap,oob]
 //	aegis-killswitch status  -config FILE [-cluster C] [-channels configmap,oob]
+//	aegis-killswitch check   -config FILE [-cluster C] [-channels configmap,oob] [-warn-age D] [-crit-left D] [-format json|prom] [-out FILE]
 //
 // stop подписывает документ одним ключом и публикует его (с -out — только файл, без сети: запасной путь). release
 // готовит документ «не остановлен» с первой подписью и ничего не публикует: файл передаётся второму дежурному,
 // который подписывает его cosign -publish. Снять остановку и подтвердить работу можно только двумя подписями разных
 // ключей oncall. renew — ежечасное продление двумя независимыми ключами renewer; при действующем stop отказывает.
 // После публикации документ читается обратно из каждого канала. status печатает оценку (водяные знаки — только из каналов).
+// check — то же чтение каналов для мониторинга из отдельного стека (cron/systemd timer, права только на чтение):
+// статус ok | stopped | warning | critical, причины и, с -format prom, метрики для textfile-collector (-out пишется
+// атомарно). critical — нет подтверждения или до конца подтверждения меньше -crit-left (по умолчанию renew.ttl/3);
+// warning — подтверждению больше -warn-age (по умолчанию renew.slot + 15m) или у канала ошибка; stopped — остановка
+// документом. Не проверяет intake: расхождение каналов и intake ловит правило по /metrics intake.
 //
 // issuer подписи берётся из ключей конфигурации по key_id приватного ключа. Секреты — только из файлов:
 // AEGIS_KILLSWITCH_KUBE_TOKEN_FILE (запись в ConfigMap), AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE,
 // AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE и необязательный AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE (ключи с правами записи).
 //
-// Коды выхода: 0 — успех (в том числе renew: waiting_peer и up_to_date); 1 — сбой публикации или проверки любого канала,
-// отказ release/publish/renew/cosign, порог подписей не выполнен; 2 — ошибка аргументов, конфигурации или ключей.
+// Коды выхода: 0 — успех (в том числе renew: waiting_peer и up_to_date; check: ok и stopped); 1 — сбой публикации или
+// проверки любого канала, отказ release/publish/renew/cosign, порог подписей не выполнен, check: warning и critical;
+// 2 — ошибка аргументов, конфигурации или ключей.
 package main
 
 import (
@@ -32,6 +39,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -40,10 +48,14 @@ import (
 	"github.com/limpjungle/aegis3311/internal/catalog"
 	"github.com/limpjungle/aegis3311/internal/killswitch"
 	"github.com/limpjungle/aegis3311/internal/killswitch/s3"
+	"github.com/limpjungle/aegis3311/internal/promtext"
 	"github.com/limpjungle/aegis3311/internal/strictjson"
 )
 
 const maxConfigBytes = 1 << 20
+
+// clusterRe — допустимое имя кластера в метках check (как kill_switch.cluster в конфигурации intake).
+var clusterRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$`)
 
 // maxSkew — допуск опережения issued_at при проверках CLI (как max_skew intake по умолчанию).
 const maxSkew = 2 * time.Minute
@@ -285,18 +297,19 @@ func stamp(t time.Time) string {
 
 type flags struct {
 	cfgPath, key, in, out, ttl, chans string
+	warnAge, critLeft, format         string
 	global, publish                   bool
 	clusters, actions                 multi
 }
 
 func run(ctx context.Context, args []string, e env) error {
-	const cmds = "команда: stop | release | cosign | publish | renew | status"
+	const cmds = "команда: stop | release | cosign | publish | renew | status | check"
 	if len(args) == 0 {
 		return usage(errors.New(cmds))
 	}
 	cmd := args[0]
 	switch cmd {
-	case "stop", "release", "cosign", "publish", "renew", "status":
+	case "stop", "release", "cosign", "publish", "renew", "status", "check":
 	default:
 		return usage(fmt.Errorf("неизвестная команда %q; %s", cmd, cmds))
 	}
@@ -309,9 +322,12 @@ func run(ctx context.Context, args []string, e env) error {
 	fs.StringVar(&f.out, "out", "", "выходной файл документа")
 	fs.StringVar(&f.ttl, "ttl", "", "TTL документа")
 	fs.StringVar(&f.chans, "channels", "", "каналы через запятую: configmap,oob (по умолчанию оба)")
+	fs.StringVar(&f.warnAge, "warn-age", "", "check: возраст подтверждения для warning (по умолчанию renew.slot + 15m)")
+	fs.StringVar(&f.critLeft, "crit-left", "", "check: остаток подтверждения для critical (по умолчанию renew.ttl / 3)")
+	fs.StringVar(&f.format, "format", "", "check: json (по умолчанию) | prom")
 	fs.BoolVar(&f.global, "global", false, "stop: остановить все цели")
 	fs.BoolVar(&f.publish, "publish", false, "cosign: опубликовать при выполнении порога")
-	fs.Var(&f.clusters, "cluster", "stop: кластер для остановки (повторяется); status: кластер intake")
+	fs.Var(&f.clusters, "cluster", "stop: кластер для остановки (повторяется); status и check: кластер intake")
 	fs.Var(&f.actions, "action", "stop: тип действия для запрета (повторяется)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return usage(err)
@@ -321,6 +337,9 @@ func run(ctx context.Context, args []string, e env) error {
 	}
 	if f.cfgPath == "" {
 		return usage(fmt.Errorf("%s: нужен -config", cmd))
+	}
+	if cmd != "check" && (f.warnAge != "" || f.critLeft != "" || f.format != "") {
+		return usage(fmt.Errorf("%s: -warn-age, -crit-left и -format относятся к check", cmd))
 	}
 	need := map[string][][2]string{
 		"stop":    {{"-key", f.key}},
@@ -334,8 +353,8 @@ func run(ctx context.Context, args []string, e env) error {
 			return usage(fmt.Errorf("%s: нужен %s", cmd, n[0]))
 		}
 	}
-	if cmd != "stop" && (f.global || len(f.actions) > 0 || (cmd != "status" && len(f.clusters) > 0)) {
-		return usage(fmt.Errorf("%s: -global, -action и -cluster относятся к stop (и -cluster к status)", cmd))
+	if cmd != "stop" && (f.global || len(f.actions) > 0 || (cmd != "status" && cmd != "check" && len(f.clusters) > 0)) {
+		return usage(fmt.Errorf("%s: -global, -action и -cluster относятся к stop (и -cluster к status и check)", cmd))
 	}
 	s, err := newSession(f.cfgPath, e)
 	if err != nil {
@@ -354,11 +373,14 @@ func run(ctx context.Context, args []string, e env) error {
 		return s.renew(ctx, f)
 	}
 	if len(f.clusters) > 1 {
-		return usage(errors.New("status: один -cluster"))
+		return usage(fmt.Errorf("%s: один -cluster", cmd))
 	}
 	cl := ""
 	if len(f.clusters) == 1 {
 		cl = f.clusters[0]
+	}
+	if cmd == "check" {
+		return s.check(ctx, cl, f)
 	}
 	return s.status(ctx, cl, f.chans)
 }
@@ -392,6 +414,36 @@ func (s *session) newDoc(sg *audit.Ed25519Signer, k killswitch.Key, global bool,
 		return d, usage(err)
 	}
 	return d, nil
+}
+
+// writeAtomic пишет файл через временный файл в том же каталоге и rename: textfile-collector не увидит половину файла.
+func writeAtomic(path string, b []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return usage(err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return usage(err)
+	}
+	defer os.Remove(tmp.Name()) // после успешного rename имени уже нет
+	_, err = tmp.Write(b)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if err == nil {
+		err = tmp.Chmod(0o644)
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return usage(err)
+	}
+	return nil
 }
 
 func writeFile(path string, b []byte) error {
@@ -590,6 +642,11 @@ func (s *session) checkNewerThanStop(ctx context.Context, v killswitch.Verified,
 		if err != nil {
 			return rejected(fmt.Errorf("документ в канале %s не разбирается (%s): нельзя исключить более новый stop", c.Name(), errText(err)))
 		}
+		if !isRun(cur) && cur.IssuedAt.After(s.e.now().Add(maxSkew)) {
+			fmt.Fprintf(s.e.stderr, "stop в канале %s из будущего (issued_at %s): intake применяет его, но W не двигает; release его заменит; проверьте часы подписавшего\n",
+				c.Name(), audit.Timestamp(cur.IssuedAt))
+			continue
+		}
 		if !isRun(cur) && !v.IssuedAt.After(cur.IssuedAt) {
 			return rejected(fmt.Errorf("в канале %s stop новее документа (issued_at %s): подготовьте новый release", c.Name(), audit.Timestamp(cur.IssuedAt)))
 		}
@@ -705,10 +762,11 @@ func (s *session) renew(ctx context.Context, f flags) error {
 	return printJSON(s.e.stdout, res)
 }
 
-func (s *session) status(ctx context.Context, cluster, chans string) error {
+// observe читает каналы и оценивает состояние без водяных знаков (они есть только у intake).
+func (s *session) observe(ctx context.Context, cluster, chans string) (killswitch.State, error) {
 	cs, err := s.channels(chans)
 	if err != nil {
-		return err
+		return killswitch.State{}, err
 	}
 	var views []killswitch.ChannelView
 	for _, c := range cs {
@@ -730,7 +788,14 @@ func (s *session) status(ctx context.Context, cluster, chans string) error {
 		}
 		views = append(views, vw)
 	}
-	st := killswitch.Evaluate(s.e.now(), views, killswitch.Marks{}, killswitch.Options{Cluster: cluster, MaxSkew: maxSkew})
+	return killswitch.Evaluate(s.e.now(), views, killswitch.Marks{}, killswitch.Options{Cluster: cluster, MaxSkew: maxSkew}), nil
+}
+
+func (s *session) status(ctx context.Context, cluster, chans string) error {
+	st, err := s.observe(ctx, cluster, chans)
+	if err != nil {
+		return err
+	}
 	out := map[string]any{"state": st.Info(), "channels": st.Channels, "triggers": st.Triggers}
 	if !st.ConfirmedUntil.IsZero() {
 		out["confirmed_until"] = audit.Timestamp(st.ConfirmedUntil)
@@ -739,6 +804,164 @@ func (s *session) status(ctx context.Context, cluster, chans string) error {
 		out["note"] = "кластер не задан (-cluster): остановка по clusters не оценивалась"
 	}
 	return printJSON(s.e.stdout, out)
+}
+
+// checkResult — итог check.
+type checkResult struct {
+	Status               string                    `json:"status"` // ok | stopped | warning | critical
+	Reasons              []string                  `json:"reasons"`
+	State                audit.KillSwitchState     `json:"state"`
+	ConfirmationIssuedAt string                    `json:"confirmation_issued_at"` // "" — нет засчитанного подтверждения
+	ConfirmedUntil       string                    `json:"confirmed_until"`        // "" — нет
+	Channels             []audit.KillSwitchChannel `json:"channels"`
+	CheckedAt            string                    `json:"checked_at"`
+}
+
+func (s *session) check(ctx context.Context, cluster string, f flags) error {
+	if cluster != "" && !clusterRe.MatchString(cluster) {
+		return usage(errors.New("check: -cluster: ожидается DNS-имя"))
+	}
+	if f.format != "" && f.format != "json" && f.format != "prom" {
+		return usage(errors.New("check: -format: json | prom"))
+	}
+	slot, e1 := time.ParseDuration(s.cfg.Renew.Slot)
+	ttl, e2 := time.ParseDuration(s.cfg.Renew.TTL)
+	if e1 != nil || e2 != nil || slot <= 0 || ttl <= 0 {
+		return usage(errors.New("конфигурация: renew.slot и renew.ttl — длительности"))
+	}
+	warnAge, critLeft := slot+15*time.Minute, ttl/3
+	for _, d := range []struct {
+		name, v string
+		p       *time.Duration
+	}{{"-warn-age", f.warnAge, &warnAge}, {"-crit-left", f.critLeft, &critLeft}} {
+		if d.v == "" {
+			continue
+		}
+		v, err := time.ParseDuration(d.v)
+		if err != nil || v <= 0 {
+			return usage(fmt.Errorf("check: %s: положительная длительность, например \"75m\"", d.name))
+		}
+		*d.p = v
+	}
+	st, err := s.observe(ctx, cluster, f.chans)
+	if err != nil {
+		return err
+	}
+	now := s.e.now()
+	res := checkResult{State: st.Info(), Channels: st.Channels, CheckedAt: audit.Timestamp(now), Reasons: []string{}}
+	if res.Channels == nil {
+		res.Channels = []audit.KillSwitchChannel{}
+	}
+	if !st.Stopped {
+		res.ConfirmationIssuedAt, res.ConfirmedUntil = stampOrEmpty(st.TriggerIssuedAt), stampOrEmpty(st.ConfirmedUntil)
+	}
+	status := "ok"
+	if st.Stopped {
+		status = "stopped"
+		res.Reasons = append(res.Reasons, "stopped: "+st.Reason)
+	}
+	for _, c := range st.Channels {
+		if c.Error != "" {
+			status = worst(status, "warning")
+			res.Reasons = append(res.Reasons, fmt.Sprintf("channel %s: %s", c.Channel, c.Error))
+		}
+	}
+	if !st.Stopped && !st.TriggerIssuedAt.IsZero() && now.Sub(st.TriggerIssuedAt) > warnAge {
+		status = worst(status, "warning")
+		res.Reasons = append(res.Reasons, fmt.Sprintf("confirmation_age: %s > %s", now.Sub(st.TriggerIssuedAt).Round(time.Second), warnAge))
+	}
+	if st.Reason == "no_confirmation" {
+		status = worst(status, "critical")
+		res.Reasons = append(res.Reasons, "no_confirmation")
+	} else if !st.Stopped && !st.ConfirmedUntil.IsZero() && st.ConfirmedUntil.Sub(now) < critLeft {
+		status = worst(status, "critical")
+		res.Reasons = append(res.Reasons, fmt.Sprintf("confirmation_expiring: осталось %s < %s", st.ConfirmedUntil.Sub(now).Round(time.Second), critLeft))
+	}
+	res.Status = status
+
+	var out []byte
+	if f.format == "prom" {
+		if out, err = checkProm(res, cluster, st, now); err != nil {
+			return usage(err)
+		}
+	} else {
+		var b bytes.Buffer
+		if err := printJSON(&b, res); err != nil {
+			return usage(err)
+		}
+		out = b.Bytes()
+	}
+	if f.out != "" {
+		if err := writeAtomic(f.out, out); err != nil {
+			return err
+		}
+	} else if _, err := s.e.stdout.Write(out); err != nil {
+		return usage(err)
+	}
+	if status == "warning" || status == "critical" {
+		return rejected(fmt.Errorf("check: %s: %s", status, strings.Join(res.Reasons, "; ")))
+	}
+	return nil
+}
+
+func stampOrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return audit.Timestamp(t)
+}
+
+// worst возвращает более серьёзный из статусов: critical > warning > stopped > ok.
+func worst(a, b string) string {
+	rank := map[string]int{"ok": 0, "stopped": 1, "warning": 2, "critical": 3}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
+}
+
+func parseStamp(s string) time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, s)
+	return t
+}
+
+// checkProm — экспозиция Prometheus для textfile-collector. Метка cluster есть у всех рядов: по ней результат check
+// соединяется с рядами intake (on(cluster)); без -cluster она пустая.
+func checkProm(res checkResult, cluster string, st killswitch.State, now time.Time) ([]byte, error) {
+	cl := promtext.Label{Name: "cluster", Value: cluster}
+	lbl := func(extra ...promtext.Label) []promtext.Label { return append([]promtext.Label{cl}, extra...) }
+	var w promtext.Writer
+	w.Gauge("aegis_killswitch_check_timestamp_seconds", "Время последней проверки каналов kill switch.",
+		promtext.Sample{Labels: lbl(), Value: promtext.Unix(now)})
+	var status []promtext.Sample
+	for _, v := range []string{"ok", "stopped", "warning", "critical"} {
+		status = append(status, promtext.Sample{Labels: lbl(promtext.Label{Name: "status", Value: v}), Value: promtext.Bool(res.Status == v)})
+	}
+	w.Gauge("aegis_killswitch_check_status", "Итог проверки (one-hot).", status...)
+	w.Gauge("aegis_killswitch_stopped", "1 — цель остановлена по документам каналов.",
+		promtext.Sample{Labels: lbl(), Value: promtext.Bool(st.Stopped)})
+	var reasons []promtext.Sample
+	for _, v := range []string{"none", "global", "cluster", "no_confirmation"} {
+		want := st.Reason
+		if want == "" {
+			want = "none"
+		}
+		reasons = append(reasons, promtext.Sample{Labels: lbl(promtext.Label{Name: "reason", Value: v}), Value: promtext.Bool(want == v)})
+	}
+	w.Gauge("aegis_killswitch_reason", "Причина остановки (one-hot).", reasons...)
+	w.Gauge("aegis_killswitch_confirmation_issued_timestamp_seconds", "issued_at самого свежего засчитанного подтверждения; 0 — нет.",
+		promtext.Sample{Labels: lbl(), Value: promtext.Unix(parseStamp(res.ConfirmationIssuedAt))})
+	w.Gauge("aegis_killswitch_confirmed_until_timestamp_seconds", "Конец действия подтверждения; 0 — нет.",
+		promtext.Sample{Labels: lbl(), Value: promtext.Unix(parseStamp(res.ConfirmedUntil))})
+	var ok, issued []promtext.Sample
+	for _, c := range st.Channels {
+		l := lbl(promtext.Label{Name: "channel", Value: c.Channel})
+		ok = append(ok, promtext.Sample{Labels: l, Value: promtext.Bool(c.IssuedAt != "" && c.Error == "")})
+		issued = append(issued, promtext.Sample{Labels: l, Value: promtext.Unix(parseStamp(c.IssuedAt))})
+	}
+	w.Gauge("aegis_killswitch_channel_ok", "1 — в канале есть документ без ошибок.", ok...)
+	w.Gauge("aegis_killswitch_channel_doc_issued_timestamp_seconds", "issued_at документа в канале; 0 — нет документа.", issued...)
+	return w.Bytes()
 }
 
 func printJSON(w io.Writer, v any) error {

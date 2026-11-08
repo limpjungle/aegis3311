@@ -39,6 +39,34 @@ func (s *stack) env(out, errb *bytes.Buffer) env {
 	return env{getenv: s.getenv, stdout: out, stderr: errb, deps: routersvc.Deps{Transport: s.tr}, live: newLive}
 }
 
+// startReleased — старт на цепочке без истории: первая оценка — bootstrap (W = now), старый run её не снимает; затем
+// release двумя дежурными с issued_at позже W, и только после него появляется алерт (иначе запись успела бы уйти в
+// режиме off).
+func (s *stack) startReleased(t *testing.T, e func(env) env) *running {
+	t.Helper()
+	amGone.Store(true)
+	r := s.start(t, e)
+	waitFor(t, "событие bootstrap", 5*time.Second, func() bool {
+		for _, ev := range s.killSwitchEvents(t) {
+			if ev.Bootstrap {
+				return true
+			}
+		}
+		return false
+	})
+	lastKS.setRun(t)
+	waitFor(t, "событие released", 8*time.Second, func() bool {
+		for _, ev := range s.killSwitchEvents(t) {
+			if ev.Kind == "kill_switch_released" {
+				return true
+			}
+		}
+		return false
+	})
+	amGone.Store(false)
+	return r
+}
+
 func (s *stack) records(t *testing.T) []audit.DecisionRecord {
 	t.Helper()
 	b, err := os.ReadFile(s.chain)
@@ -131,7 +159,7 @@ func (r *running) stop(t *testing.T) error {
 // Алерт → одна запись → алерт пропал на close_after → инцидент закрыт (состояние intake и store роутера), повторной записи нет.
 func TestServeResolvedClosesIncident(t *testing.T) {
 	s := newStack(t)
-	r := s.start(t, nil)
+	r := s.startReleased(t, nil)
 	waitFor(t, "запись shadow", 5*time.Second, func() bool { return len(s.records(t)) == 1 })
 	recs := s.records(t)
 	id := recs[0].Incident.ID
@@ -332,6 +360,22 @@ func TestReplay(t *testing.T) {
 	}
 	if r := recs[len(recs)-1]; r.Intake == nil || r.Intake.Outcome != "routed" || r.Mode != audit.ModeShadow {
 		t.Errorf("запись: %+v", r.Intake)
+	}
+	// на цепочке без истории (bootstrap) первый прогон идёт в режиме off, а запись помечена replay.snapshot
+	if r := recs[len(recs)-1]; r.LLM == nil || r.LLM.Mode != "off" || r.Intake.Source != "replay.snapshot" || s.tr.posts != posts {
+		t.Errorf("первый прогон: llm=%+v source=%q posts=%d", r.LLM, r.Intake.Source, s.tr.posts)
+	}
+	// release двумя дежурными позже W; второй прогон — другой снимок (тот же инцидент по ID уже записан) и с моделью
+	lastKS.setRun(t)
+	fx2 := filepath.Join(t.TempDir(), "fx2.json")
+	os.WriteFile(fx2, []byte(strings.Replace(replayFixture, "2026-01-02T09:55:00Z", "2026-01-02T09:56:00Z", 1)), 0o600)
+	o.Reset()
+	if err := run(context.Background(), []string{"replay", "-config", s.cfgPath, "-in", fx2}, s.env(&o, &e)); err != nil {
+		t.Fatalf("второй replay: %v\n%s", err, e.String())
+	}
+	recs = s.records(t)
+	if r := recs[len(recs)-1]; len(recs) != before+2 || r.LLM == nil || r.LLM.Mode != "hybrid" || r.Intake.Source != "replay.snapshot" || s.tr.posts != posts+1 {
+		t.Errorf("второй прогон: записей %d llm=%+v posts=%d", len(recs), r.LLM, s.tr.posts)
 	}
 	// фикстура с лишним полем отвергается (2), без записи
 	bad := filepath.Join(t.TempDir(), "bad.json")

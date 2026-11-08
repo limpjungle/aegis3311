@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -302,7 +303,7 @@ func TestStateLostAndResume(t *testing.T) {
 	if Classify(ErrNothingToResume) != ClassFailClosed {
 		t.Error("класс ErrNothingToResume")
 	}
-	if _, n1 := f.verifyChain(); n1 != n0 {
+	if _, n1 := f.verifyChain(); !reflect.DeepEqual(n1, n0) {
 		t.Errorf("длина цепочки изменилась: %v -> %v", n0, n1)
 	}
 	evs, _ := f.verifyChain()

@@ -45,10 +45,17 @@ type SigStore interface {
 
 // RenewResult — итог Renew. Action: published | waiting_peer | up_to_date.
 type RenewResult struct {
-	Action    string   `json:"action"`
-	Slot      string   `json:"slot"`
-	DocSHA256 string   `json:"doc_sha256,omitempty"`
-	Signers   []string `json:"signers,omitempty"`
+	Action    string    `json:"action"`
+	Slot      string    `json:"slot"`
+	DocSHA256 string    `json:"doc_sha256,omitempty"`
+	Signers   []string  `json:"signers,omitempty"`
+	Peers     []PeerSig `json:"peers,omitempty"` // подписи коллег-renewer'ов в этом слоте
+}
+
+// PeerSig — что видно о подписи коллеги: Status ok | missing (ещё не подписал) | http_403 (нет прав или ListBucket).
+type PeerSig struct {
+	KeyID  string `json:"key_id"`
+	Status string `json:"status"`
 }
 
 // SlotDocument — детерминированный документ слота: все renewer'ы получают одни и те же байты и подписывают их независимо.
@@ -58,6 +65,7 @@ func SlotDocument(now time.Time, slot, ttl time.Duration) Document {
 }
 
 // isNotFound: подписи пира пока нет. S3 без права ListBucket отвечает 403 на несуществующий ключ, поэтому 403 — то же, что 404.
+// Постоянный http_403 при этом означает отсутствие прав или ListBucket: в RenewResult.Peers он отличается от missing.
 func isNotFound(err error) bool {
 	var k kinder
 	return errors.As(err, &k) && (k.ErrKind() == "http_404" || k.ErrKind() == "http_403")
@@ -129,6 +137,12 @@ func Renew(ctx context.Context, now time.Time, cfg RenewConfig, me audit.Signer,
 	for _, id := range peers {
 		raw, err := sigs.Get(ctx, key(id))
 		if isNotFound(err) {
+			st := "missing"
+			var k kinder
+			if errors.As(err, &k) && k.ErrKind() == "http_403" {
+				st = "http_403"
+			}
+			res.Peers = append(res.Peers, PeerSig{KeyID: id, Status: st})
 			continue
 		}
 		if err != nil {
@@ -144,6 +158,7 @@ func Renew(ctx context.Context, now time.Time, cfg RenewConfig, me audit.Signer,
 		if full, err = AddSignature(full, rs.Signature); err != nil {
 			return res, err
 		}
+		res.Peers = append(res.Peers, PeerSig{KeyID: id, Status: "ok"})
 	}
 	v, err := Parse(Marshal(full), keys, o)
 	if err != nil {

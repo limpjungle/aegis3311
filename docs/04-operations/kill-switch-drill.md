@@ -21,6 +21,7 @@
 5. У дежурных и renewer есть: ключи подписи, файлы `AEGIS_KILLSWITCH_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE`, конфигурация CLI `ks.json`.
 6. Тестовый алерт, который intake берёт в работу (метки `namespace`, `service` из реестра), можно поднять и погасить по требованию.
 7. `aegis-intake` работает, журнал (`stderr`) и цепочка аудита доступны.
+8. Bootstrap пройден (упражнение 0), подключены `/metrics` intake (`metrics_listen`) и `aegis-killswitch check` во внешнем стеке мониторинга ([intake-deploy.md](intake-deploy.md), «Kill switch», шаг 7): после каждого `stop` проверяйте не только событие в цепочке, но и `check` (`stopped`/`reason`) и `aegis_intake_killswitch_stopped` — три источника должны сойтись.
 
 Фиксация времени: перед каждым упражнением запишите время публикации (UTC, до секунды). После — `latency_ms` из события цепочки:
 
@@ -32,6 +33,12 @@ jq -c 'select(.record.schema=="aegisops/killswitch-event/v1")|.record' CHAIN | t
 Для каждого упражнения проверяется запись о тестовом алерте: `llm.mode=off`, `llm.reason=mode_off`, `model=null`, `intake.sources` заполнен (сбор продолжался), `kill_switch.state` соответствует остановке.
 
 ## Упражнения
+
+**0. Bootstrap (новая цепочка или стенд без истории).** Проводится на чистой цепочке до остальных упражнений.
+1. Подготовьте `release` двумя дежурными **до** старта intake и опубликуйте его в оба канала (свежий run с `issued_at` раньше будущего старта).
+2. Запустите intake. Ожидается событие `kill_switch_engaged` с `bootstrap=true`, `from=none`, `stop_watermark` ≈ время старта; журнал `kill_switch_bootstrap`; в `/metrics` `aegis_intake_killswitch_bootstrap_awaiting_release 1`, `aegis_intake_killswitch_stopped 1`, `reason=no_confirmation`. Тестовый алерт даёт запись `llm.mode=off`: release, выпущенный до старта, **не действует** (проверка защиты от повтора старого документа).
+3. Подготовьте новый release (`release`, затем `cosign -publish`) уже после старта: `issued_at` позже `stop_watermark`. Ожидается `kill_switch_released`, `from=stopped`, `bootstrap_awaiting_release 0`, `check` — `ok`; алерт снова даёт `hybrid`.
+4. Рестарт intake: повторного bootstrap нет (в цепочке есть `stop_watermark`).
 
 **1. Остановка по кластеру только во внешнем канале (out-of-band).**
 `aegis-killswitch stop -config ks.json -key oncall-1.pem -cluster CLUSTER -channels oob`. Ожидается: на ближайшем опросе (≤ 10 с + таймаут чтения) событие `kill_switch_engaged`, `state.reason=cluster`, `channels[oob]` — `fresh/stop`, `channels[configmap]` — не остановка. Поднять тестовый алерт: запись `llm.mode=off`.
@@ -57,7 +64,9 @@ b) Только транспорт: закройте от intake оба кана
 **7. Продление.**
 1. При действующем stop `aegis-killswitch renew -key renewer-a.pem` — **отказ** (код 1), `renew -key renewer-b.pem` — отказ.
 2. Снять остановку (упр. 5). Затем `renew -key renewer-a.pem` — `waiting_peer` (подпись сохранена в `renew/<слот>/`), состояние intake не меняется. `renew -key renewer-b.pem` — `published`; повтор любым — `up_to_date`.
-3. Остановить renewer и дождаться трети TTL: в журнале intake `kill_switch_confirmation_expiring`; по истечении TTL — `no_confirmation`.
+3. Остановить renewer и дождаться трети TTL: в журнале intake `kill_switch_confirmation_expiring`; по истечении TTL — `no_confirmation`. Параллельно наблюдайте мониторинг: `check` уходит в `warning` (возраст подтверждения больше `-warn-age`; на учении задайте `-warn-age`/`-crit-left` под TTL 5 м, например `-warn-age 3m -crit-left 2m`), затем в `critical`; у intake `aegis_intake_killswitch_liveness_confirmed` падает в 0 по истечении подтверждения, срабатывают `KillSwitchRenewalMissed`/`KillSwitchConfirmationExpiring`. Вывод `renew` показывает `peers`: `missing` — коллега ещё не подписал, `http_403` — нет прав на чтение подписи.
+
+**8. Stop из будущего (рассинхрон часов).** На машине дежурного сдвиньте часы на +10 минут (или `stop` с готовым документом, подписанным заранее) и опубликуйте `stop -cluster CLUSTER`. Ожидается: stop **применяется** (intake остановлен, `reason=cluster`), в журнале событие с `future_trigger=true`, `latency_ms` отрицательный; `stop_watermark` не изменился, документ канала в `check` помечен `future`. Затем `release` с нормальными часами: если `issued_at` релиза не новее будущего stop, `publish` не откажет, а напечатает предупреждение «stop … из будущего» — release снимает остановку, потому что W не сдвинут. Документ с `issued_at` дальше 24 часов в будущем отбрасывается целиком (остановки нет, канал с ошибкой `future`).
 
 ## Результаты
 
@@ -70,13 +79,15 @@ b) Только транспорт: закройте от intake оба кана
 | 5 | снятие двумя ключами | | | | `released`, один ключ/одна подпись отказ | |
 | 6a | подавление: порча + deny | | | | остановка на ближайшем опросе | |
 | 6b | подавление: только транспорт | | | | остановка не позже TTL | |
-| 7 | продление, отказ при stop | | | — | отказ; `waiting_peer` → `published` | |
+| 7 | продление, отказ при stop | | | — | отказ; `waiting_peer` → `published`; check `warning` → `critical` | |
+| 0 | bootstrap | | | — | release до старта не действует; после старта снимает | |
+| 8 | stop из будущего | | | отрицательный | применён, W не сдвинут, release снимает | |
 
 **Критерий G0:** остановка (упражнения 1–3) — не позже `poll_interval + request_timeout` (по умолчанию 10 с + 5 с) после публикации в любом из каналов; для 6b — не позже TTL. `latency_ms` на отдельных intake может превышать критерий при рассинхроне часов — сначала проверьте NTP.
 
 ## Запасные пути
 
-- Часы дежурного: на машине дежурного обязателен NTP. `stop` с `issued_at` в будущем дальше `max_skew` (2 мин) intake отбрасывает целиком — остановка не сработает; проверьте `date -u` перед публикацией.
+- Часы дежурного: на машине дежурного обязателен NTP. `stop` с `issued_at` в будущем дальше `max_skew` (2 мин), но не дальше 24 часов, intake применяет, не сдвигая водяные знаки; дальше 24 часов — отбрасывает целиком (остановка не сработает); проверьте `date -u` перед публикацией.
 - Нет CLI или ключей-файлов: `aegis-killswitch stop ... -out stop.json` на офлайн-машине, затем `kubectl apply` (ConfigMap `kill-switch`, ключ `document` — байты файла) либо загрузка файла в объект `kill-switch.json` через консоль хранилища. Документ подписан заранее, права на запись нужны только на канал.
 - Один канал недоступен: публикуйте с `-channels` исправного; остановка действует по любому свежему stop.
 - Intake не реагирует: проверьте журнал (`kill_switch_channel` с классом), `aegis-killswitch status`, часы и `max_skew`.

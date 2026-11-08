@@ -157,7 +157,7 @@ func TestMixedChain(t *testing.T) {
 	must(w.Append(shadowRecord(t, "noop_requested_l0")))
 	w.Close()
 	var st VerifyStats
-	if _, err := verifyFile(t, path, k, VerifyOptions{Stats: &st}); err != nil || st != (VerifyStats{Records: 3, RouterEvents: 2}) {
+	if _, err := verifyFile(t, path, k, VerifyOptions{Stats: &st}); err != nil || st.Records != 3 || st.RouterEvents != 2 || st.KillSwitchEvents != 0 || st.Unverified != 0 {
 		t.Fatalf("verify: %v %+v", err, st)
 	}
 	w, err = OpenWriter(path, "agent-staging-1", s, k)

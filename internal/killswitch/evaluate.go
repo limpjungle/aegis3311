@@ -55,7 +55,9 @@ func stamp(t time.Time) string {
 // Evaluate вычисляет состояние. Чистая функция: время и документы приходят аргументами.
 //
 // Свежесть: issued_at <= now+skew и now < issued_at+ttl. issued_at дальше skew в будущем — документ future:
-// отбрасывается целиком (не действует и не двигает водяные знаки). Просроченные документы действуют только на
+// если в нём stop-эффект для цели и issued_at не дальше now+24ч, stop применяется, но водяные знаки не двигает и
+// подтверждением не считается (рассинхрон часов подписавшего не должен ни снимать, ни прятать остановку);
+// остальные future-документы отбрасываются целиком. Просроченные документы действуют только на
 // водяные знаки. Stop-эффекты (global, свой кластер, действия) применяются от любого свежего документа; «не остановлен»
 // требует свежего подтверждения новее W (см. Confirmation и Marks).
 func Evaluate(now time.Time, views []ChannelView, prev Marks, o Options) State {
@@ -63,16 +65,23 @@ func Evaluate(now time.Time, views []ChannelView, prev Marks, o Options) State {
 		v       *Verified
 		fresh   bool
 		confirm string
+		future  bool // issued_at впереди часов: stop применяется, но W/R и подтверждение не затрагиваются
 	}
 	st := State{Marks: prev}
 	var docs []doc
 	for _, vw := range views {
 		ch := audit.KillSwitchChannel{Channel: vw.Channel, Status: "absent", Error: vw.Err, Cached: vw.Cached, Signers: []string{}}
-		if vw.Doc != nil && vw.Doc.IssuedAt.After(now.Add(o.MaxSkew)) {
-			ch.Error = "future"
+		future := vw.Doc != nil && vw.Doc.IssuedAt.After(now.Add(o.MaxSkew))
+		stopEff := vw.Doc != nil && (vw.Doc.StopsTarget(o.Cluster) || len(vw.Doc.Doc.Actions) > 0)
+		if future && (!stopEff || vw.Doc.IssuedAt.After(now.Add(maxTTL))) {
+			ch.Error = "future" // документ не участвует
 		} else if vw.Doc != nil {
 			v := vw.Doc
-			d := doc{v: v, fresh: now.Before(v.IssuedAt.Add(v.TTL)), confirm: v.Confirmation(o.Cluster)}
+			d := doc{v: v, fresh: now.Before(v.IssuedAt.Add(v.TTL)), confirm: v.Confirmation(o.Cluster), future: future}
+			if future {
+				d.fresh, d.confirm = true, "none"
+				ch.Error = "future"
+			}
 			docs = append(docs, d)
 			ch.Status = "expired"
 			if d.fresh {
@@ -99,6 +108,9 @@ func Evaluate(now time.Time, views []ChannelView, prev Marks, o Options) State {
 	// Водяные знаки: просроченные документы тоже считаются. Действия без global/кластера W не двигают: ограничение
 	// типа действия не должно останавливать роутер.
 	for _, d := range docs {
+		if d.future {
+			continue
+		}
 		if d.v.StopsTarget(o.Cluster) {
 			st.Marks.Stop = maxTime(st.Marks.Stop, d.v.IssuedAt)
 		}

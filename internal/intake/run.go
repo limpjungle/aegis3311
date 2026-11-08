@@ -22,6 +22,7 @@ type Service struct {
 	Router  Router
 	Log     *slog.Logger
 	Now     func() time.Time
+	Metrics *Metrics // nil — без метрик
 	// DispatchEvery — период проверки готовых к обработке инцидентов; 0 → min(poll_interval, 1 с).
 	DispatchEvery time.Duration
 
@@ -129,6 +130,9 @@ func (s *Service) poll(ctx context.Context) error {
 	pctx, cancel := context.WithTimeout(ctx, s.D.Poll)
 	firing, err := s.Alerts.Firing(pctx)
 	cancel()
+	if ctx.Err() == nil {
+		s.Metrics.AlertPoll(err == nil)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log().Warn("intake_poll_failed", "class", sourceClass(err))

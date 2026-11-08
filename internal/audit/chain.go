@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,7 +111,10 @@ type ChainError struct {
 	Line   int
 	Seq    uint64
 	Reason string
+	Err    error // класс ошибки для errors.Is (ErrNewerFormat); может быть nil
 }
+
+func (e *ChainError) Unwrap() error { return e.Err }
 
 func (e *ChainError) Error() string {
 	if e.Line == 0 {
@@ -134,10 +138,21 @@ type VerifyOptions struct {
 	OnRecord func(seq uint64, rec *DecisionRecord)
 	// OnKillSwitchEvent — если не nil, вызывается для каждого события kill switch после проверки уникальности event_id.
 	OnKillSwitchEvent func(seq uint64, ev *KillSwitchEvent)
+	// IntegrityOnly — только для чтения (aegis-audit verify -integrity-only), не для OpenWriter. Цепь, хеши, подписи и
+	// checkpoint'ы проверяются полностью; запись неизвестной схемы aegisops/* или с неизвестным полем (ErrNewerFormat)
+	// не считается ошибкой, а считается в VerifyStats.Unverified: содержимое не проверено, ID не сверяются, колбэки не
+	// вызываются. Для приёмки аудита режим не годится. Остальные ошибки по-прежнему фатальны.
+	IntegrityOnly bool
 }
 
 // VerifyStats — число проверенных записей цепочки по типам.
-type VerifyStats struct{ Records, RouterEvents, KillSwitchEvents uint64 }
+type VerifyStats struct {
+	Records, RouterEvents, KillSwitchEvents uint64
+	// Unverified — записи, содержимое которых не проверено (только при IntegrityOnly); UnverifiedSchemas — их схемы,
+	// отсортированы, без повторов.
+	Unverified        uint64
+	UnverifiedSchemas []string
+}
 
 // Verify читает цепочку целиком и проверяет: формат строк, непрерывность seq, ссылки prev_hash, хеши записей
 // и записей, подписи, схему и валидность записей всех типов, уникальность record_id и event_id и checkpoint'ы.
@@ -156,8 +171,15 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 	}
 	ids := map[string]uint64{}
 	var stats VerifyStats
+	unverified := map[string]bool{}
 	if opts.Stats != nil {
-		defer func() { *opts.Stats = stats }()
+		defer func() {
+			for s := range unverified {
+				stats.UnverifiedSchemas = append(stats.UnverifiedSchemas, s)
+			}
+			sort.Strings(stats.UnverifiedSchemas)
+			*opts.Stats = stats
+		}()
 	}
 	br := bufio.NewReaderSize(r, 64<<10)
 	for line := 1; ; line++ {
@@ -217,55 +239,90 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 		var routerEv *RouterEvent
 		var ksEv *KillSwitchEvent
 		var decRec *DecisionRecord
+		newerWhat := "" // запись новее сборки: неизвестная схема или поле
+		// decode разбирает запись; неизвестное поле известной схемы — запись новее сборки, прочее — нарушение формата.
+		decode := func(label string, v any) (ok bool, h Head, err error) {
+			if derr := strictjson.Decode(e.Record, v); derr != nil {
+				var uf *strictjson.UnknownFieldError
+				if errors.As(derr, &uf) {
+					newerWhat = fmt.Sprintf("содержит поле %q, неизвестное этой сборке", uf.Field)
+					return false, head, nil
+				}
+				h, err = fail("%s: %v", label, derr)
+				return false, h, err
+			}
+			return true, head, nil
+		}
 		switch peek.Schema {
 		case RecordSchema:
 			var rec DecisionRecord
-			if err := strictjson.Decode(e.Record, &rec); err != nil {
-				return fail("decision record: %v", err)
+			ok, h, err := decode("decision record", &rec)
+			if err != nil {
+				return h, err
 			}
-			if err := rec.Validate(); err != nil {
-				return fail("decision record: %v", err)
+			if ok {
+				if err := rec.Validate(); err != nil {
+					return fail("decision record: %v", err)
+				}
+				id, idName = rec.RecordID, "record_id"
+				decRec = &rec
+				stats.Records++
 			}
-			id, idName = rec.RecordID, "record_id"
-			decRec = &rec
-			stats.Records++
 		case RouterEventSchema:
 			var ev RouterEvent
-			if err := strictjson.Decode(e.Record, &ev); err != nil {
-				return fail("router event: %v", err)
+			ok, h, err := decode("router event", &ev)
+			if err != nil {
+				return h, err
 			}
-			if err := ev.Validate(); err != nil {
-				return fail("router event: %v", err)
+			if ok {
+				if err := ev.Validate(); err != nil {
+					return fail("router event: %v", err)
+				}
+				id, idName = ev.EventID, "event_id"
+				routerEv = &ev
+				stats.RouterEvents++
 			}
-			id, idName = ev.EventID, "event_id"
-			routerEv = &ev
-			stats.RouterEvents++
 		case KillSwitchEventSchema:
 			var ev KillSwitchEvent
-			if err := strictjson.Decode(e.Record, &ev); err != nil {
-				return fail("kill switch event: %v", err)
+			ok, h, err := decode("kill switch event", &ev)
+			if err != nil {
+				return h, err
 			}
-			if err := ev.Validate(); err != nil {
-				return fail("kill switch event: %v", err)
+			if ok {
+				if err := ev.Validate(); err != nil {
+					return fail("kill switch event: %v", err)
+				}
+				id, idName = ev.EventID, "event_id"
+				ksEv = &ev
+				stats.KillSwitchEvents++
 			}
-			id, idName = ev.EventID, "event_id"
-			ksEv = &ev
-			stats.KillSwitchEvents++
 		default:
-			return fail("неизвестная схема записи %q", peek.Schema)
+			if !aegisSchemaRe.MatchString(peek.Schema) {
+				return fail("неизвестная схема записи %q", peek.Schema)
+			}
+			newerWhat = "не поддерживается этой сборкой"
 		}
-		if prev, dup := ids[id]; dup {
-			return fail("%s %s уже был в seq %d", idName, id, prev)
-		}
-		ids[id] = e.Seq
-		if decRec != nil && opts.OnRecord != nil {
-			opts.OnRecord(e.Seq, decRec)
-		}
-		if routerEv != nil && opts.OnRouterEvent != nil {
-			opts.OnRouterEvent(e.Seq, routerEv)
-		}
-		if ksEv != nil && opts.OnKillSwitchEvent != nil {
-			opts.OnKillSwitchEvent(e.Seq, ksEv)
+		if newerWhat != "" {
+			if !opts.IntegrityOnly {
+				return head, &ChainError{Line: line, Seq: head.Seq + 1, Err: ErrNewerFormat, Reason: fmt.Sprintf(
+					"запись схемы %q %s (формат цепочки %d): обновите aegis-audit; целостность — verify -integrity-only", peek.Schema, newerWhat, ChainFormat)}
+			}
+			stats.Unverified++
+			unverified[peek.Schema] = true
+		} else {
+			if prev, dup := ids[id]; dup {
+				return fail("%s %s уже был в seq %d", idName, id, prev)
+			}
+			ids[id] = e.Seq
+			if decRec != nil && opts.OnRecord != nil {
+				opts.OnRecord(e.Seq, decRec)
+			}
+			if routerEv != nil && opts.OnRouterEvent != nil {
+				opts.OnRouterEvent(e.Seq, routerEv)
+			}
+			if ksEv != nil && opts.OnKillSwitchEvent != nil {
+				opts.OnKillSwitchEvent(e.Seq, ksEv)
+			}
 		}
 		for _, c := range cps[e.Seq] {
 			if c.ChainID != e.ChainID || c.HeadHash != e.Hash {

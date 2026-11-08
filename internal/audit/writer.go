@@ -37,7 +37,8 @@ type Writer struct {
 
 // OpenWriter открывает или создаёт файл цепочки. Существующий файл проверяется целиком (Verify с keys);
 // любое нарушение, включая оборванную последнюю строку, — ошибка: дописывать в повреждённую цепочку нельзя.
-// Ключ signer должен быть в keys.
+// Ключ signer должен быть в keys. Проверка строгая (без IntegrityOnly): цепочка с записями новее сборки (ErrNewerFormat)
+// не открывается, поэтому писатель не откатывается на сборку с меньшим ChainFormat на той же цепочке.
 func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, error) {
 	if !chainRe.MatchString(chainID) {
 		return nil, fmt.Errorf("некорректный chain_id %q", chainID)

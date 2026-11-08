@@ -16,6 +16,12 @@
 // записи (kill_switch) и в цепочке аудита (события kill_switch_*); флаги — реальные для PEP. Первый опрос выполняется до
 // приёма инцидентов. collect kill switch не читает; aegis-llmrouter route его тоже не читает.
 //
+// Метрики (serve): metrics_listen в конфигурации (host:port; пусто — выключено) поднимает отдельный HTTP-listener с GET/HEAD
+// /metrics (формат Prometheus 0.0.4: kill switch, опросы Alertmanager, записи, инциденты, роутер, цепочка) и /healthz
+// (всегда 200, пока процесс жив; от kill switch не зависит, readiness по нему делать нельзя). В метриках нет ID инцидентов,
+// сервисов, namespace, issuer'ов и хешей документов. Адрес, который не открылся, — код 2 до приёма инцидентов; сбой
+// HTTP-сервера после старта не фатален (журнал intake_metrics_failed). replay и collect listener не поднимают.
+//
 // Секреты — только из файлов: OPENROUTER_API_KEY_FILE, AEGIS_MASKER_KEY_FILE, AEGIS_AUDIT_KEY_FILE (как у aegis-llmrouter);
 // AEGIS_KUBE_TOKEN_FILE (serve, collect, replay), AEGIS_ALERTMANAGER_TOKEN_FILE и AEGIS_PROMETHEUS_TOKEN_FILE (необязательны);
 // kill switch (serve, replay): AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE, AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE (read-only пара)
@@ -23,7 +29,7 @@
 // Конфигурация — intake.Config (JSON, без секретов); пример и допущения окружения — docs/04-operations/intake-deploy.md.
 //
 // Коды выхода: 0 — успех; 1 — fail-closed (store, цепочка, аудит или состояние intake отказали или повреждены);
-// 2 — ошибка аргументов, конфигурации или окружения; 3 — файлы заняты работающим процессом.
+// 2 — ошибка аргументов, конфигурации или окружения (в том числе занятый metrics_listen); 3 — файлы заняты работающим процессом.
 package main
 
 import (
@@ -34,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -101,6 +108,8 @@ type env struct {
 	deps    routersvc.Deps
 	signals []os.Signal
 	live    func(cfg intake.Config, getenv func(string) string, d intake.Durations) (Live, error)
+	// listen открывает listener метрик; nil — net.Listen.
+	listen func(network, addr string) (net.Listener, error)
 }
 
 func main() {
@@ -311,6 +320,19 @@ func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *route
 		return fail(err)
 	}
 	defer st.Close()
+	// Адрес метрик занимается до приёма инцидентов: ошибка — код 2, а не тихая работа без наблюдения.
+	var ln net.Listener
+	if cfg.MetricsListen != "" {
+		listen := e.listen
+		if listen == nil {
+			listen = net.Listen
+		}
+		if ln, err = listen("tcp", cfg.MetricsListen); err != nil {
+			return usage(fmt.Errorf("metrics_listen: %w", err))
+		}
+		lg.Info("intake_metrics_listening", "addr", ln.Addr().String())
+		defer func() { ln.Close() }() // повторное закрытие после ServeMetrics безвредно
+	}
 	warnUnmanaged(ctx, cfg, d, live, lg)
 	lookup := func(ns, s string) (intake.ServiceConfig, bool) { return cfg.Lookup(ns, s) }
 	pipe := &intake.Pipeline{IntakeID: cfg.IntakeID, Env: cfg.Environment, Settle: d.Settle, MaxPerHour: cfg.MaxRoutedPerHour, SnapshotDir: cfg.SnapshotDir,
@@ -326,21 +348,37 @@ func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *route
 	rt.Router.SetStopGate(mon.Stopped)
 	pipe.KillSwitch = mon
 	closePolls := int((d.CloseAfter + d.Poll - 1) / d.Poll)
-	svc := &intake.Service{Cfg: cfg, D: d, Alerts: live.Alerts, State: st, Pipe: pipe, Router: rt.Router, Log: lg,
+	var metrics *intake.Metrics
+	if ln != nil {
+		metrics = intake.NewMetrics(cfg.KillSwitch.Cluster, mon, rt.Router, rt.Writer, st, nil)
+		pipe.Metrics = metrics
+	}
+	svc := &intake.Service{Cfg: cfg, D: d, Alerts: live.Alerts, State: st, Pipe: pipe, Router: rt.Router, Log: lg, Metrics: metrics,
 		Tracker: intake.NewTracker(cfg.Environment, func(ns, s string) bool { _, ok := cfg.Lookup(ns, s); return ok }, closePolls, cfg.MaxOpenIncidents, st, lg)}
 
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, 3)
+	errs := make(chan error, 4)
 	go func() { errs <- rt.Serve(gctx) }()
 	go func() { errs <- svc.Run(gctx) }()
 	go func() { errs <- mon.Run(gctx) }() // сбой записи события kill switch фатален: цель остаётся остановленной
-	first := <-errs
+	n := 3
+	if metrics != nil {
+		n++
+		go func() {
+			err := intake.ServeMetrics(gctx, ln, metrics.Handler(), lg) // всегда nil, в том числе после сбоя сервера (журнал)
+			<-gctx.Done()                                               // сбой метрик не останавливает intake: результат только по отмене
+			errs <- err
+		}()
+	}
+	all := []error{<-errs}
 	cancel()
-	second, third := <-errs, <-errs
+	for range n - 1 {
+		all = append(all, <-errs)
+	}
 	cerr := rt.Close()
-	lg.Info("shutdown", "serve_error", fmt.Sprint(errors.Join(first, second, third)), "close_error", fmt.Sprint(cerr))
-	if err := errors.Join(first, second, third, cerr); err != nil {
+	lg.Info("shutdown", "serve_error", fmt.Sprint(errors.Join(all...)), "close_error", fmt.Sprint(cerr))
+	if err := errors.Join(append(all, cerr)...); err != nil {
 		return fail(err)
 	}
 	return nil
@@ -473,7 +511,7 @@ func replay(ctx context.Context, cfg intake.Config, d intake.Durations, rt *rout
 	cw := &captureWriter{RecordWriter: rt.Writer}
 	pipe := &intake.Pipeline{IntakeID: cfg.IntakeID, Env: cfg.Environment, MaxPerHour: cfg.MaxRoutedPerHour, SnapshotDir: cfg.SnapshotDir, Cat: cat,
 		Collector: intake.FixtureCollector{Snap: snap}, Router: rt.Router, Writer: cw, PEP: pep.New(cat, pol), State: st, Log: lg, KillSwitch: mon,
-		Lookup: func(ns, s string) (intake.ServiceConfig, bool) { return svc, ns == svc.Namespace && s == svc.Service }}
+		Source: "replay.snapshot", Lookup: func(ns, s string) (intake.ServiceConfig, bool) { return svc, ns == svc.Namespace && s == svc.Service }}
 	err = pipe.Handle(ctx, &inc)
 	if cw.last != nil {
 		if perr := printJSON(e.stdout, map[string]any{"record": cw.last}); perr != nil {

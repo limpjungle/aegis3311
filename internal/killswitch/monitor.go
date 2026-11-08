@@ -50,6 +50,20 @@ type Monitor struct {
 	stopCh      chan struct{} // закрыт, пока цель остановлена
 	chanErr     map[string]string
 	expWarned   time.Time
+
+	bootstrap  bool                 // истории нет: первая оценка выставит W := max(W, now)
+	bootW      time.Time            // W, выставленный bootstrap; нулевой, если неизвестен
+	seen       map[string]seenDoc   // последний разобранный документ канала: для обнаружения отката канала
+	lastPoll   time.Time            // последний PollOnce, дошедший до оценки и записи (или без смены)
+	chanOK     map[string]time.Time // последний успешный Fetch+Parse канала (не из кэша)
+	evCount    map[string]uint64    // записанные события по kind с момента старта
+	lastEngLat *int64               // latency_ms последнего записанного kill_switch_engaged
+}
+
+// seenDoc — что известно о последнем документе канала: issued_at и был ли в нём stop-эффект для цели.
+type seenDoc struct {
+	IssuedAt time.Time
+	Stop     bool
 }
 
 // NewMonitor создаёт монитор в состоянии «остановлен, no_confirmation».
@@ -57,7 +71,8 @@ func NewMonitor(sources []Source, keys Keyring, po ParseOptions, o Options, ever
 	ev EventWriter, initiator audit.Actor) *Monitor {
 	m := &Monitor{Sources: sources, Keys: keys, Parse: po, Opt: o, Every: every, FetchTimeout: fetchTimeout,
 		Events: ev, Initiator: initiator, Now: time.Now, Log: slog.Default(),
-		cache: map[string]*Verified{}, stopCh: make(chan struct{}), chanErr: map[string]string{}}
+		cache: map[string]*Verified{}, stopCh: make(chan struct{}), chanErr: map[string]string{},
+		bootstrap: true, seen: map[string]seenDoc{}, chanOK: map[string]time.Time{}, evCount: map[string]uint64{}}
 	m.cur = State{KillSwitchState: audit.KillSwitchState{Stopped: true, Reason: "no_confirmation", Actions: []string{}},
 		Triggers: []string{}, TriggerSigners: []string{}}
 	close(m.stopCh)
@@ -70,7 +85,8 @@ func stateKey(s audit.KillSwitchState, mk Marks) string {
 }
 
 // Restore восстанавливает водяные знаки и последний записанный ключ состояния из последнего события цепочки.
-// Вызывается до первого PollOnce. Без события (ok == false) ничего не делает.
+// Вызывается до первого PollOnce. Без события (ok == false) ничего не делает: остаётся bootstrap. Событие с пустым
+// stop_watermark (цепочка до bootstrap) bootstrap тоже оставляет: история W в ней не записана.
 func (m *Monitor) Restore(ev audit.KillSwitchEvent, ok bool) {
 	if !ok {
 		return
@@ -85,6 +101,12 @@ func (m *Monitor) Restore(ev audit.KillSwitchEvent, ok bool) {
 		mk.Release, _ = time.Parse(time.RFC3339Nano, ev.ReleaseWatermark)
 	}
 	m.marks = mk
+	if ev.StopWatermark != "" {
+		m.bootstrap = false
+		if ev.Bootstrap {
+			m.bootW = mk.Stop
+		}
+	}
 	m.lastKey = stateKey(ev.State, mk)
 	stopped := ev.State.Stopped
 	m.lastStopped = &stopped
@@ -163,21 +185,47 @@ func (m *Monitor) PollOnce(ctx context.Context) error {
 			if errors.As(err, &de) {
 				vw.Err = de.Class
 			}
-		} else if v.IssuedAt.After(now.Add(m.Opt.MaxSkew)) {
-			delete(m.cache, name)
-			vw.Err = "future"
 		} else {
+			// issued_at из будущего отсеивает Evaluate: stop в пределах суток применяется, остальное — нет.
 			m.cache[name] = &v
 			vw.Doc = &v
+			m.chanOK[name] = now
 		}
+		m.trackChannel(name, vw)
 		views = append(views, vw)
 	}
 	prevMarks := m.marks
+	boot := m.bootstrap
+	if boot {
+		prevMarks.Stop = maxTime(prevMarks.Stop, now) // истории нет: документы, выпущенные до старта, цель не вернут
+	}
 	m.mu.Unlock()
 
 	st := Evaluate(now, views, prevMarks, m.Opt)
 	m.logChannels(st)
-	return m.transition(now, st)
+	return m.transition(now, st, boot)
+}
+
+// trackChannel сравнивает документ канала с предыдущим и логирует откат: более старый issued_at или исчезнувший stop.
+// Только наблюдение: на оценку не влияет. Вызывается под m.mu.
+func (m *Monitor) trackChannel(name string, vw ChannelView) {
+	if vw.Doc != nil && !vw.Cached {
+		stop := vw.Doc.StopsTarget(m.Opt.Cluster) || len(vw.Doc.Doc.Actions) > 0
+		if prev, ok := m.seen[name]; ok && vw.Doc.IssuedAt.Before(prev.IssuedAt) {
+			m.logger().Warn("kill_switch_channel_regressed", "channel", name, "kind", "older_document",
+				"prev_issued_at", audit.Timestamp(prev.IssuedAt), "issued_at", audit.Timestamp(vw.Doc.IssuedAt))
+		}
+		m.seen[name] = seenDoc{IssuedAt: vw.Doc.IssuedAt, Stop: stop}
+		return
+	}
+	switch vw.Err {
+	case "http_404", "no_document", "http_403":
+		if prev, ok := m.seen[name]; ok && prev.Stop {
+			m.logger().Warn("kill_switch_channel_regressed", "channel", name, "kind", "stop_removed",
+				"prev_issued_at", audit.Timestamp(prev.IssuedAt), "error", vw.Err)
+		}
+		delete(m.seen, name)
+	}
 }
 
 func (m *Monitor) logChannels(st State) {
@@ -194,11 +242,14 @@ func (m *Monitor) logChannels(st State) {
 
 // transition применяет состояние и пишет событие. Остановка: сначала применить, потом записать. Снятие: сначала
 // записать, потом применить; при сбое записи цель остаётся остановленной.
-func (m *Monitor) transition(now time.Time, st State) error {
+//
+// boot — первая оценка без истории: событие помечается bootstrap, W уже поднят до now.
+func (m *Monitor) transition(now time.Time, st State, boot bool) error {
 	m.mu.Lock()
 	key := stateKey(st.KillSwitchState, st.Marks)
 	if key == m.lastKey {
 		m.applyLocked(st) // событие уже в цепочке (в том числе восстановленное Restore)
+		m.lastPoll = now
 		m.mu.Unlock()
 		m.warnExpiring(now, st)
 		return nil
@@ -218,7 +269,7 @@ func (m *Monitor) transition(now time.Time, st State) error {
 		RecordedAt: audit.Timestamp(m.Now()), From: from, TargetCluster: m.Opt.Cluster, State: st.Info(),
 		Triggers: st.Triggers, Signers: st.TriggerSigners, AppliedAt: audit.Timestamp(appliedAt),
 		StopWatermark: st.Marks.stampStop(), ReleaseWatermark: st.Marks.stampRelease(),
-		Channels: st.Channels, Initiator: m.Initiator}
+		Bootstrap: boot && from == "none", Channels: st.Channels, Initiator: m.Initiator}
 	switch {
 	case st.Stopped && from != "stopped":
 		ev.Kind = "kill_switch_engaged"
@@ -243,10 +294,27 @@ func (m *Monitor) transition(now time.Time, st State) error {
 	m.lastKey = key
 	stopped := st.Stopped
 	m.lastStopped = &stopped
+	if boot {
+		m.bootstrap, m.bootW = false, st.Marks.Stop
+	}
+	m.lastPoll = now
+	m.evCount[ev.Kind]++
+	if ev.Kind == "kill_switch_engaged" && ev.LatencyMs != nil {
+		l := *ev.LatencyMs
+		m.lastEngLat = &l
+	}
 	m.mu.Unlock()
 
-	m.logger().Info(ev.Kind, "reason", st.Reason, "from", from, "latency_ms", latency, "triggers", st.Triggers,
-		"signers", st.TriggerSigners, "actions", st.Actions, "liveness_confirmed", st.LivenessConfirmed)
+	args := []any{"reason", st.Reason, "from", from, "latency_ms", latency, "triggers", st.Triggers,
+		"signers", st.TriggerSigners, "actions", st.Actions, "liveness_confirmed", st.LivenessConfirmed}
+	if appliedAt.Before(st.TriggerIssuedAt) {
+		args = append(args, "future_trigger", true) // issued_at триггера впереди часов intake (в пределах суток)
+	}
+	m.logger().Info(ev.Kind, args...)
+	if boot {
+		m.logger().Warn("kill_switch_bootstrap", "stop_watermark", st.Marks.stampStop(),
+			"hint", "истории kill switch нет: нужен release двумя дежурными с issued_at позже stop_watermark")
+	}
 	m.warnExpiring(now, st)
 	return nil
 }
@@ -329,6 +397,41 @@ func (m *Monitor) Guard(ctx context.Context) (context.Context, context.CancelFun
 		}
 	}()
 	return gctx, func() { cancel(context.Canceled) }
+}
+
+// Observation — снимок для /metrics: без тел документов, issuer'ов и sha.
+type Observation struct {
+	State                    State
+	BootstrapPending         bool                 // первая оценка без истории ещё не записана
+	BootstrapAwaitingRelease bool                 // W выставлен bootstrap (W == bootW), и после него нет release (!R.After(W))
+	LastPoll                 time.Time            // последний PollOnce, дошедший до оценки и записи (или без смены)
+	ChannelLastOK            map[string]time.Time // последний успешный Fetch+Parse канала (не из кэша)
+	Events                   map[string]uint64    // kill_switch_engaged | _released | _updated с момента старта
+	LastEngagedLatencyMs     *int64
+}
+
+// Observe возвращает копию наблюдаемого состояния. После рестарта признак BootstrapAwaitingRelease известен, только
+// если последнее событие цепочки — bootstrap.
+func (m *Monitor) Observe() Observation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := Observation{State: m.cur, BootstrapPending: m.bootstrap, LastPoll: m.lastPoll,
+		ChannelLastOK: make(map[string]time.Time, len(m.chanOK)), Events: make(map[string]uint64, len(m.evCount))}
+	o.State.Actions = append([]string{}, m.cur.Actions...)
+	o.State.Channels = append([]audit.KillSwitchChannel(nil), m.cur.Channels...)
+	o.BootstrapAwaitingRelease = m.bootstrap ||
+		(!m.bootW.IsZero() && m.marks.Stop.Equal(m.bootW) && !m.marks.Release.After(m.marks.Stop))
+	for k, v := range m.chanOK {
+		o.ChannelLastOK[k] = v
+	}
+	for k, v := range m.evCount {
+		o.Events[k] = v
+	}
+	if m.lastEngLat != nil {
+		l := *m.lastEngLat
+		o.LastEngagedLatencyMs = &l
+	}
+	return o
 }
 
 // Static — неизменное состояние без опроса: для тестов и сборок без kill switch.

@@ -61,7 +61,17 @@ type mfix struct {
 	logs    *bytes.Buffer
 }
 
+// newMFix — монитор с историей: bootstrap уже пройден, W = t0-2ч, R = t0-1ч (R > W, renewer продлевает).
+// Первое событие остаётся from=none: цепочка для теста пуста, водяные знаки заданы как после Restore.
 func newMFix(t *testing.T) *mfix {
+	f := newMFixFresh(t)
+	f.m.bootstrap = false
+	f.m.marks = Marks{Stop: t0.Add(-2 * time.Hour), Release: t0.Add(-time.Hour)}
+	return f
+}
+
+// newMFixFresh — монитор без истории: первая оценка пройдёт как bootstrap.
+func newMFixFresh(t *testing.T) *mfix {
 	f := &mfix{tk: newTKeys(t), cm: &fakeSrc{name: "configmap", err: kerr("http_404")}, oob: &fakeSrc{name: "oob", err: kerr("http_404")},
 		ev: &fakeEvents{}, now: t0.Add(time.Minute), logs: &bytes.Buffer{}}
 	f.m = NewMonitor([]Source{f.cm, f.oob}, f.tk.ring, ParseOptions{}, Options{Cluster: "c1", MaxSkew: 2 * time.Minute}, time.Second, time.Second,

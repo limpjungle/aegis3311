@@ -58,6 +58,9 @@ type KillSwitchChannel struct {
 //	kill_switch_released — остановка снята или первое подтверждение после старта (From: none | stopped);
 //	kill_switch_updated — состояние изменилось без смены остановки (водяные знаки, действия).
 //
+// Bootstrap — признак первого события цепочки (from=none), когда истории kill switch нет и stop_watermark взят
+// как «сейчас» по часам intake: документы, выпущенные раньше, цель не вернут, нужен release позже этого знака.
+//
 // LatencyMs — метрика G0: applied_at − issued_at документа-триггера; nil, если триггера нет (no_confirmation).
 type KillSwitchEvent struct {
 	Schema           string              `json:"schema"`
@@ -74,6 +77,7 @@ type KillSwitchEvent struct {
 	LatencyMs        *int64              `json:"latency_ms"`
 	StopWatermark    string              `json:"stop_watermark"`
 	ReleaseWatermark string              `json:"release_watermark"`
+	Bootstrap        bool                `json:"bootstrap"` // первое событие цепочки без истории: stop_watermark выставлен по часам intake
 	Channels         []KillSwitchChannel `json:"channels"`
 	Initiator        Actor               `json:"initiator"` // system/<intake id>
 }
@@ -222,6 +226,9 @@ func (e *KillSwitchEvent) Validate() error {
 	utcOrEmpty("applied_at", e.AppliedAt, bad)
 	utcOrEmpty("stop_watermark", e.StopWatermark, bad)
 	utcOrEmpty("release_watermark", e.ReleaseWatermark, bad)
+	if e.Bootstrap && (e.From != "none" || e.StopWatermark == "") {
+		bad("bootstrap: только первое событие (from=none) с stop_watermark")
+	}
 	if len(e.Channels) < 1 || len(e.Channels) > 4 {
 		bad("channels: от 1 до 4")
 	}

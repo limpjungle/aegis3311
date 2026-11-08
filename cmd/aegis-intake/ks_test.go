@@ -170,12 +170,12 @@ func TestServeStartRunOneSignature(t *testing.T) {
 // Подмена документа на stop (одна подпись) во время работы: событие engaged с latency_ms, журнал kill_switch_engaged.
 func TestServeStopWhileRunning(t *testing.T) {
 	s := newStack(t)
-	r := s.start(t, nil)
+	r := s.startReleased(t, nil)
 	waitFor(t, "запись", 5*time.Second, func() bool { return len(s.records(t)) == 1 })
 	lastKS.set(lastKS.doc(t, false, []string{"prod-eu-1"}, time.Now(), time.Hour, 1))
 	waitFor(t, "событие engaged", 8*time.Second, func() bool {
 		for _, ev := range s.killSwitchEvents(t) {
-			if ev.Kind == "kill_switch_engaged" {
+			if ev.Kind == "kill_switch_engaged" && ev.From == "running" { // первый engaged — bootstrap
 				return true
 			}
 		}

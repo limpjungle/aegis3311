@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,7 @@ const maxConfigBytes = 4 << 20
 //	    "query": "sum by (pod) (container_memory_working_set_bytes{namespace=\"$namespace\",pod=~\"$service-.*\",container!=\"\",container!=\"POD\"}) / 1048576"},
 //	   {"name": "pgbouncer_cl_waiting", "unit": "count", "applies": "database", "max_series": 1,
 //	    "query": "sum(pgbouncer_pools_client_waiting_connections{database=\"$database\"})"}],
+//	 "metrics_listen": ":9464",
 //	 "kill_switch": {"cluster": "prod-eu-1",
 //	                 "keys": [{"path": "/etc/aegis/ks/ivanov.pub.pem", "issuer": "oncall-ivanov", "role": "oncall"},
 //	                          {"path": "/etc/aegis/ks/petrov.pub.pem", "issuer": "oncall-petrov", "role": "oncall"}],
@@ -72,7 +75,8 @@ type Config struct {
 	Services          []ServiceConfig   `json:"services"`
 	Metrics           []MetricSpec      `json:"metrics"`
 	DBQueries         map[string]string `json:"db_queries"`
-	KillSwitch        *KillSwitchConfig `json:"kill_switch"` // обязателен: без него intake не запускается
+	KillSwitch        *KillSwitchConfig `json:"kill_switch"`    // обязателен: без него intake не запускается
+	MetricsListen     string            `json:"metrics_listen"` // адрес /metrics и /healthz (host:port); пусто — выключено; только serve
 }
 
 // KillSwitchConfig — kill switch (architecture.md §2.2). Секреты S3 (ключи доступа) — только из файлов в
@@ -305,6 +309,9 @@ func (c Config) Validate() error {
 	if err := c.validateKillSwitch(); err != nil {
 		return err
 	}
+	if c.MetricsListen != "" && !validListenAddr(c.MetricsListen) {
+		return bad("metrics_listen: ожидается host:port")
+	}
 	if len(c.Services) == 0 {
 		return bad("services: реестр сервисов пуст")
 	}
@@ -445,13 +452,26 @@ func (s ServiceConfig) Expand(q string) string {
 	return strings.NewReplacer("$namespace", s.Namespace, "$service", s.Service, "$database", s.Database, "$pg_cluster", s.PgCluster).Replace(q)
 }
 
+// validListenAddr: host:port, порт 0..65535, хост пуст, IP или DNS-имя.
+func validListenAddr(a string) bool {
+	host, port, err := net.SplitHostPort(a)
+	if err != nil {
+		return false
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || port != strconv.FormatUint(n, 10) {
+		return false
+	}
+	return host == "" || net.ParseIP(host) != nil || dnsNameRe.MatchString(host)
+}
+
 func (c Config) validateKillSwitch() error {
 	bad := func(format string, a ...any) error {
 		return fmt.Errorf("конфигурация intake: kill_switch: "+format, a...)
 	}
 	k := c.KillSwitch
 	if k == nil {
-		return errors.New("конфигурация intake: секция kill_switch обязательна")
+		return errors.New("конфигурация intake: секция kill_switch обязательна (fail-safe): добавьте её по docs/04-operations/intake-deploy.md, " +
+			"раздел \"Kill switch\"; до release двумя дежурными после старта intake работает с llm.mode=off")
 	}
 	for name, v := range map[string]string{"cluster": k.Cluster, "configmap.namespace": k.ConfigMap.Namespace, "configmap.name": k.ConfigMap.Name} {
 		if !dnsNameRe.MatchString(v) {

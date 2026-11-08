@@ -72,6 +72,10 @@ type Pipeline struct {
 	Now         func() time.Time
 	RetryPause  time.Duration // 0 → RetryPause
 	Log         *slog.Logger
+	Metrics     *Metrics // nil — без метрик
+	// Source — intake.source записей и источник алертов в статусах: пусто — "alerts.alertmanager"; replay ставит "replay.snapshot",
+	// чтобы записи повторного прогона в боевой цепочке отличались от живых.
+	Source string
 
 	mu   sync.Mutex
 	hist map[string][]time.Time // сервис → моменты маршрутизации за последний час (в памяти)
@@ -90,6 +94,13 @@ func (p *Pipeline) ksState() killswitch.State {
 		return killswitch.State{KillSwitchState: audit.KillSwitchState{Stopped: true, Reason: "no_confirmation", Actions: []string{}}}
 	}
 	return p.KillSwitch.State()
+}
+
+func (p *Pipeline) source() string {
+	if p.Source != "" {
+		return p.Source
+	}
+	return "alerts.alertmanager"
 }
 
 func (p *Pipeline) log() *slog.Logger {
@@ -176,7 +187,7 @@ func (p *Pipeline) Handle(ctx context.Context, inc *Incident) error {
 	if mode == llmrouter.ModeOff { // модель не вызывается: источники не нужны
 		t0 = p.now().UTC().Truncate(time.Minute)
 		req = llmrouter.Request{IncidentID: id, Service: svc.Service, Mode: mode}
-		stats = []audit.SourceStatus{{Source: "alerts.alertmanager", Status: "ok", Items: len(cur.Alerts)}}
+		stats = []audit.SourceStatus{{Source: p.source(), Status: "ok", Items: len(cur.Alerts)}}
 	} else {
 		var err error
 		pause := p.RetryPause
@@ -293,6 +304,7 @@ func (p *Pipeline) append(rec *audit.DecisionRecord, id string) error {
 	if _, err := p.Writer.Append(rec); err != nil {
 		return fmt.Errorf("intake: запись %s: %w", id, err)
 	}
+	p.Metrics.Record(rec)
 	p.log().Info("intake_recorded", "incident", id, "outcome", rec.Intake.Outcome, "reason", rec.Intake.Reason)
 	return p.markRecorded(id)
 }
@@ -321,7 +333,7 @@ func (p *Pipeline) baseRecord(inc Incident, svc ServiceConfig, outcome, reason s
 	return &audit.DecisionRecord{Schema: audit.RecordSchema, RecordID: audit.NewRecordID(), RecordedAt: audit.Timestamp(p.now()), KillSwitch: ks,
 		Mode: audit.ModeShadow, Incident: audit.IncidentRef{ID: inc.ID, Service: svc.Service, Environment: p.Env},
 		Initiator: audit.Actor{Kind: "agent", ID: p.IntakeID}, RetrievedDocs: []string{}, AutonomyLevel: "L0",
-		Intake: &audit.IntakeInfo{Source: "alerts.alertmanager", FirstAlertAt: audit.Timestamp(inc.FirstAlertAt), CollectedAt: audit.Timestamp(t0),
+		Intake: &audit.IntakeInfo{Source: p.source(), FirstAlertAt: audit.Timestamp(inc.FirstAlertAt), CollectedAt: audit.Timestamp(t0),
 			Alerts: fps, Sources: stats, Outcome: outcome, Reason: reason}}
 }
 

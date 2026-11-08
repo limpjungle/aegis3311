@@ -97,15 +97,96 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: aegis-kill-swit
 subjects: [{kind: Group, name: aegis-oncall, apiGroup: rbac.authorization.k8s.io}, {kind: ServiceAccount, name: aegis-renewer, namespace: aegisops-control}]
 ```
 
+Запись в ConfigMap — единственное, что подавляет in-band канал, не имея ключей подписи (стереть stop, положить ещё свежий старый документ), поэтому: (а) включите аудит Kubernetes (`audit.k8s.io`, уровень `Metadata`) на `update`/`patch`/`delete` ConfigMap `aegisops-control/kill-switch` и заведите алерт, если писал не `aegis-oncall` и не `aegis-renewer`; (б) в журнале intake следите за `kill_switch_channel_regressed` (шаг 7). Out-of-band канал при этом остаётся.
+
 Токен записи — `AEGIS_KILLSWITCH_KUBE_TOKEN_FILE` у `aegis-killswitch`. Renewer с внешней инфраструктуры нужен kube-доступ на запись в ConfigMap; если его нет, renewer работает только с `-channels oob`: через ConfigMap тогда проходят только остановки и снятия, а продление подтверждения идёт по внешнему каналу — допустимо, потому что хватает одного свежего подтверждения в любом канале.
 
-**3. Bucket (внешний канал).** Отдельный аккаунт или облако (не там, где живёт кластер), версионирование включено, без CDN и кэширующих прокси, адресация path-style для Yandex Object Storage. Политики по ключам доступа: intake — только `GetObject` на объект `kill-switch.json` (отдельная read-only пара); дежурные — `GetObject`/`PutObject` на него же; renewer — `GetObject`/`PutObject` на него и на `renew/*`, а также `s3:ListBucket` на префикс `renew/` (без него S3 отвечает 403 вместо 404 на ещё не созданную подпись пира; `renew` трактует 403 как «подписи пока нет»). Lifecycle для префикса `renew/` — удаление через 7 дней. У intake, дежурных и renewer — разные ключи доступа и разные файлы (`AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE`, при временных ключах `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`); файлы перечитываются на каждый запрос, ротация без рестарта.
+**3. Bucket (внешний канал).** Отдельный аккаунт или облако (не там, где живёт кластер), версионирование включено, без CDN и кэширующих прокси, адресация path-style для Yandex Object Storage. Политики по ключам доступа: intake — только `GetObject` на объект `kill-switch.json` (отдельная read-only пара); дежурные — `GetObject`/`PutObject` на него же; renewer — `GetObject`/`PutObject` на него и на `renew/*`, а также `s3:ListBucket` на префикс `renew/` (без него S3 отвечает 403 вместо 404 на ещё не созданную подпись пира; `renew` трактует 403 как «подписи пока нет», но в выводе `peers[].status` различает `missing` (пир ещё не подписал) и `http_403`; постоянный `http_403` у пира — нет прав на чтение или нет `ListBucket`, а не медленный коллега). Lifecycle для префикса `renew/` — удаление через 7 дней. У intake, дежурных и renewer — разные ключи доступа и разные файлы (`AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE`, при временных ключах `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`); файлы перечитываются на каждый запрос, ротация без рестарта.
 
 **4. Ключи подписи.** Каждый ключ — `aegis-audit keygen -priv KEY.pem -pub KEY.pub.pem`; приватный остаётся у владельца, публичный раздаётся в `kill_switch.keys` на всех intake и в конфигурацию `aegis-killswitch`. Нужно не меньше двух ключей `oncall` (разные люди) и два ключа `renewer` на независимых хостах и планировщиках (запуск `aegis-killswitch renew` раз в час, в разные минуты). Ключ подписи аудита intake в `keys` входить не должен (код 2). На всех участниках — NTP: `latency_ms` и проверка свежести зависят от часов (допуск `max_skew`, по умолчанию 2m).
 
-**5. Начальная публикация.** Первый документ — `release` одним дежурным (`aegis-killswitch release -out release.json`), подпись вторым (`aegis-killswitch cosign -in release.json -publish`). До этого intake остановлен (`no_confirmation`).
+**5. Начальная публикация (bootstrap).** Порядок строгий: **сначала запуск intake, потом release.** На цепочке без истории kill switch первая оценка выставляет водяной знак `W` по часам intake («сейчас»), пишет событие `kill_switch_engaged` с `bootstrap=true` и предупреждение `kill_switch_bootstrap`; любой документ с `issued_at` раньше `W` цель не вернёт, даже свежий. Затем `release` одним дежурным (`aegis-killswitch release -out release.json`) и подпись вторым (`aegis-killswitch cosign -in release.json -publish`) — `issued_at` релиза должен быть позже `stop_watermark` из события (часы NTP на машине дежурных; при сомнении подготовьте release заново после старта). До него intake работает с `llm.mode=off` (`no_confirmation`); `bootstrap_awaiting_release=1` в `/metrics` — признак ожидания. Release, подготовленный до старта intake, не действует. То же верно для новой цепочки после потери старой (см. [degraded-mode.md](degraded-mode.md)) и для `replay` на пустой цепочке: первый прогон идёт в `off`, модель — после release.
 
-**6. Поведение.** Документ в каналах — полное состояние: любой новый документ заменяет предыдущий. Остановка одной подписью по `actions` (или по чужому кластеру) без второй подписи заменяет run и останавливает этот intake по `no_confirmation` (fail-safe); чтобы запретить только тип действия и сохранить работу LLM, документ с `actions` должен нести две подписи (`stop -action ... -out`, затем `cosign -publish`). Событие смены состояния — запись `aegisops/killswitch-event/v1` в цепочке аудита; состояние на момент решения — поле `kill_switch` decision record'а. Предупреждения в журнале: `kill_switch_channel` (канал недоступен или документ отвергнут, с классом), `kill_switch_confirmation_expiring` (до конца подтверждения меньше трети TTL: продление не пришло). `replay` без `-prepare-only` читает kill switch так же, как `serve`, и требует kube-токен и ключи S3 чтения; `collect` и `aegis-llmrouter route` kill switch не читают.
+**6. Поведение.** Документ в каналах — полное состояние: любой новый документ заменяет предыдущий. Остановка одной подписью по `actions` (или по чужому кластеру) без второй подписи заменяет run и останавливает этот intake по `no_confirmation` (fail-safe); чтобы запретить только тип действия и сохранить работу LLM, документ с `actions` должен нести две подписи (`stop -action ... -out`, затем `cosign -publish`). Событие смены состояния — запись `aegisops/killswitch-event/v1` в цепочке аудита; состояние на момент решения — поле `kill_switch` decision record'а. Предупреждения в журнале: `kill_switch_channel` (канал недоступен или документ отвергнут, с классом), `kill_switch_confirmation_expiring` (до конца подтверждения меньше трети TTL: продление не пришло). `replay` без `-prepare-only` читает kill switch так же, как `serve` (с тем же bootstrap), и требует kube-токен и ключи S3 чтения; его записи помечены `intake.source = replay.snapshot`; `collect` и `aegis-llmrouter route` kill switch не читают.
+
+**7. Мониторинг.** Тихий простой — оба renewer сломаны, подтверждение истекло, intake молча в `off` — ловят два независимых механизма; нужны оба.
+
+*`aegis-killswitch check` — в отдельном стеке мониторинга, не в кластере intake* (общая беда не должна ослепить обоих). Хост с правом `GetObject` на `kill-switch.json` (read-only пара S3), `get` на ConfigMap `kill-switch` (токен с `aegis-kill-switch-read`) и конфигурацией `aegis-killswitch`; читает оба канала, подписи не ставит. По cron или systemd timer раз в минуту:
+
+```
+aegis-killswitch check -config /etc/aegis/killswitch.json -cluster prod-eu-1 -format prom -out /var/lib/node_exporter/textfile/aegis_killswitch.prom
+```
+
+Файл подхватывает textfile-collector node_exporter; запись атомарная. Статус (`ok | stopped | warning | critical`) и причины — без `-format` (JSON); код выхода 0 для `ok` и `stopped`, 1 для `warning` и `critical`. Пороги: `-warn-age` (по умолчанию `renew.slot + 15m` = 75 мин) и `-crit-left` (по умолчанию `renew.ttl / 3` = 2 ч). Метка `cluster` есть у всех рядов check.
+
+*`/metrics` intake.* `"metrics_listen": ":9464"` в конфигурации; пути `GET`/`HEAD` `/metrics` и `/healthz`. `/healthz` отвечает 200, пока жив процесс, и от kill switch не зависит: **readiness по нему не делать**. Занятый или недоступный адрес — код выхода 2 до приёма инцидентов. В метриках нет ID инцидентов, сервисов, namespace, issuer'ов, хешей документов и `intake_id`. Service и PodMonitor:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata: {name: aegis-intake-metrics, namespace: aegis-system, labels: {app: aegis-intake}}
+spec:
+  selector: {app: aegis-intake}
+  ports: [{name: metrics, port: 9464, targetPort: 9464}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: aegis-intake, namespace: aegis-system}
+spec:
+  selector: {matchLabels: {app: aegis-intake}}
+  podMetricsEndpoints: [{port: metrics, path: /metrics, interval: 15s}]
+```
+
+(порт пода `metrics: 9464` объявите в Deployment). NetworkPolicy — скрейп только из Prometheus:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: aegis-intake-metrics, namespace: aegis-system}
+spec:
+  podSelector: {matchLabels: {app: aegis-intake}}
+  policyTypes: [Ingress]
+  ingress: [{from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}, podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}}], ports: [{port: 9464, protocol: TCP}]}]
+```
+
+*Алерты.* Правило расхождения требует обоих рядов в одном Prometheus (федерация `/federate` с `match[]` или прямой скрейп); `cluster` у check и intake совпадает (`kill_switch.cluster`).
+
+```yaml
+groups:
+- name: aegis-killswitch-check            # внешний стек
+  rules:
+  - alert: KillSwitchRenewalMissed
+    expr: time() - aegis_killswitch_confirmation_issued_timestamp_seconds > 4500 and on(cluster) aegis_killswitch_stopped == 0
+  - alert: KillSwitchConfirmationExpiring
+    expr: aegis_killswitch_confirmed_until_timestamp_seconds > 0 and aegis_killswitch_confirmed_until_timestamp_seconds - time() < 7200
+  - alert: KillSwitchCheckStale
+    expr: time() - aegis_killswitch_check_timestamp_seconds > 900 or absent(aegis_killswitch_check_timestamp_seconds)
+  - alert: KillSwitchChannelDown
+    expr: aegis_killswitch_channel_ok == 0
+    for: 15m
+- name: aegis-intake
+  rules:
+  - alert: IntakeKillSwitchNoConfirmation
+    expr: aegis_intake_killswitch_reason{reason="no_confirmation"} == 1 and on() aegis_intake_killswitch_bootstrap_awaiting_release == 0
+    for: 15m
+  - alert: IntakeKillSwitchBootstrapAwaitingRelease
+    expr: aegis_intake_killswitch_bootstrap_awaiting_release == 1
+    for: 10m
+    labels: {severity: warning}
+  - alert: IntakeKillSwitchPollStale
+    expr: time() - aegis_intake_killswitch_last_poll_timestamp_seconds > 60
+  - alert: IntakeKillSwitchDisagree     # каналы «работаем», а intake стоит
+    expr: aegis_killswitch_check_status{status="ok"} == 1 and on(cluster) aegis_intake_killswitch_stopped == 1
+    for: 10m
+  - alert: IntakeMetricsDown
+    expr: up{job="aegis-intake"} == 0 or absent(up{job="aegis-intake"})
+    for: 5m
+  - alert: IntakeRouterHalted
+    expr: aegis_intake_router_halted == 1
+    for: 5m
+```
+
+`IntakeKillSwitchDisagree`: каналы показывают «работаем», а intake остановлен — `W` новее подтверждения (после bootstrap или стёртого stop), у intake нет доступа к каналам (RBAC или egress: `aegis_intake_killswitch_channel_ok == 0`), либо уехали его часы. Алерт Alertmanager `Watchdog` (всегда горящий) направьте во внешний heartbeat (например, сервис dead man's switch): если цепочка Alertmanager сломана, intake не получит инцидентов, и сигналом остановки это не считается. Журнал: `kill_switch_channel_regressed` (`older_document` или `stop_removed`) — запись в канал не из процесса публикации, разбор как инцидент безопасности; `kill_switch_bootstrap` — ожидание release.
 
 ## Листы Kubernetes: пагинация и потолки
 
@@ -143,7 +224,7 @@ aegis_sessions_by_state:
 
 ## Пример конфигурации
 
-Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`. Секция `kill_switch` обязательна (без неё intake не запускается); пути ключей и пример `oob` — см. «Kill switch» ниже. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
+Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`. Секция `kill_switch` обязательна (без неё intake не запускается); `metrics_listen` необязателен (пусто — метрики выключены, см. «Kill switch», шаг 7); пути ключей и пример `oob` — см. «Kill switch» ниже. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
 
 ```json
 {
@@ -158,6 +239,7 @@ aegis_sessions_by_state:
   "alertmanager": {"url": "https://alertmanager.monitoring.svc:9093", "ca_file": "/etc/aegis/ca.pem", "matchers": ["aegis_flow=\"true\""]},
   "prometheus": {"url": "https://prometheus.monitoring.svc:9090", "ca_file": "/etc/aegis/ca.pem", "headers": {}},
   "kubernetes": {"api_url": "https://kubernetes.default.svc", "ca_file": "/etc/aegis/kube-ca.pem", "author_annotation": "ci.example.com/deployed-by"},
+  "metrics_listen": ":9464",
   "kill_switch": {
     "cluster": "prod-eu-1",
     "keys": [

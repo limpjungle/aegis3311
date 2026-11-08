@@ -204,15 +204,14 @@ func fakeStack(t *testing.T, tr *stubTr) (cfgPath string, getenv func(string) st
 }
 
 func TestServeEndToEnd(t *testing.T) {
-	tr := &stubTr{}
-	cfgPath, getenv, chain, keys, _ := fakeStack(t, tr)
-	var out, errb bytes.Buffer
-	e := env{getenv: getenv, stdout: &out, stderr: &errb, deps: routersvc.Deps{Transport: tr}, live: newLive}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := run(ctx, []string{"serve", "-config", cfgPath}, e); err != nil {
-		t.Fatalf("%v\n%s", err, errb.String())
+	s := newStack(t)
+	tr, chain, keys := s.tr, s.chain, s.keys
+	rn := s.startReleased(t, nil)
+	waitFor(t, "запись", 5*time.Second, func() bool { return len(s.records(t)) == 1 })
+	if err := rn.stop(t); err != nil {
+		t.Fatalf("%v\n%s", err, rn.errb.String())
 	}
+	errb := rn.errb
 	b, err := os.ReadFile(chain)
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +222,9 @@ func TestServeEndToEnd(t *testing.T) {
 		OnKillSwitchEvent: func(_ uint64, ev *audit.KillSwitchEvent) { kev = append(kev, *ev) }}); err != nil {
 		t.Fatalf("%v\n%s", err, errb.String())
 	}
-	if len(kev) != 1 || kev[0].Kind != "kill_switch_released" || kev[0].From != "none" || kev[0].LatencyMs == nil {
+	// без истории: bootstrap (остановлен, W = now), затем release двумя дежурными позже W
+	if len(kev) != 2 || kev[0].Kind != "kill_switch_engaged" || kev[0].From != "none" || !kev[0].Bootstrap || kev[0].StopWatermark == "" ||
+		kev[1].Kind != "kill_switch_released" || kev[1].From != "stopped" || kev[1].Bootstrap || kev[1].LatencyMs == nil {
 		t.Fatalf("события kill switch: %+v", kev)
 	}
 	if len(recs) != 1 {

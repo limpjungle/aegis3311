@@ -6,6 +6,7 @@
 
 Пример:
     python3 generate.py --set probe --out data/probe-v4.jsonl                # набор v4 (по умолчанию)
+    python3 generate.py --set probe --format v5 --out data/probe-v5.jsonl    # набор v5 (кандидат)
     python3 generate.py --set probe --format v3 --out data/probe-v3.jsonl    # воспроизвести набор v3 байт-в-байт
     python3 generate.py --set probe --format v2 --out data/probe-v2.jsonl    # воспроизвести набор v2 байт-в-байт
     python3 generate.py --set probe --format v1 --out data/probe-v1.jsonl    # воспроизвести набор v1
@@ -13,6 +14,10 @@
 Формат v2: величину изменения (new_pool_size, new_min_replicas, value) и параметры-идентификаторы
 (database, analysis_run) вычисляет детерминированное правило шага каталога (функции step_*), а модель
 выбирает только действие и дискретные параметры: scope, pod_name, reason, parameter.
+
+Набор v5 (кандидат, golden-set.md §16) — надмножество v4: кейсы v4 входят с тем же id и побайтно тем же input/expected
+(отличается generator_version), добавлены кейсы COMPOSITION_V5_EXTRA (вердикт анализа error). Формат ответа v2, схема та же.
+Активен по-прежнему v4: v5 лежит в staged-блоке manifest.
 
 Набор v4 (активен с 08.11.2026, golden-set.md §15) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
 input/expected (отличается generator_version), добавлены кейсы COMPOSITION_V4_EXTRA (previous_analysis_run, verdict
@@ -28,8 +33,8 @@ import json
 import math
 import random
 
-GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0", "v4": "4.0.0"}
-ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2", "v4": "v2"}  # формат ответа модели; v3 отличается только входом
+GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0", "v4": "4.0.0", "v5": "5.0.0"}
+ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2", "v4": "v2", "v5": "v2"}  # формат ответа модели; v3 отличается только входом
 FORMAT = "v4"  # переключается в build()
 
 # Состав наборов: (класс, вариант, слайс, количество)
@@ -72,6 +77,15 @@ COMPOSITION_V4_EXTRA = {
     ],
 }
 COMPOSITION_V4_EXTRA["dev"] = [(c, v, s, max(2, n // 4)) for c, v, s, n in COMPOSITION_V4_EXTRA["probe"]]
+# Добавка набора v5 к составу v4 (в конце: RNG кейсов v4 не затрагивается).
+COMPOSITION_V5_EXTRA = {
+    "probe": [
+        ("RB-003", "analysis_error_no_impact", "negative", 20),
+        ("RB-003", "analysis_error_current_degrading", "confuser", 10),
+        ("RB-004", "crashloop_analysis_error", "confuser", 10),
+    ],
+}
+COMPOSITION_V5_EXTRA["dev"] = [(c, v, s, max(2, n // 4)) for c, v, s, n in COMPOSITION_V5_EXTRA["probe"]]
 
 INCIDENT_CLASSES = ["RB-001", "RB-002", "RB-003", "RB-004", "RB-005", "RB-006", "RB-007", "other"]
 ROOT_CAUSES = [
@@ -184,8 +198,8 @@ def step_max_connections(pg):
 
 
 def target_pods(inp, pn):
-    """В наборах v3 и v4 список подов цели виден модели: input.service.pods (RNG не тратится)."""
-    if FORMAT in ("v3", "v4"):
+    """В наборах v3, v4 и v5 список подов цели виден модели: input.service.pods (RNG не тратится)."""
+    if FORMAT in ("v3", "v4", "v5"):
         inp["service"]["pods"] = list(pn)
 
 
@@ -642,6 +656,82 @@ def gen_release_v4(rng, variant):
     return inp, exp
 
 
+# ---------- релизы, набор v5 ----------
+# gen_release и gen_release_v4 не трогаем: иначе сдвинется RNG и кейсы v3/v4 изменятся.
+
+def error_metrics(rng):
+    """Метрики анализа с вердиктом error: провайдер метрик вернул ошибки, значения чаще всего нет."""
+    pool = [("ingress_5xx_ratio", round(rng.uniform(0.001, 0.004), 4)),
+            ("ingress_p99_latency_ms", round(rng.uniform(140, 175), 1)),
+            ("ready_ratio", 1.0)]
+    return [threshold_metric(n, None if rng.random() < 0.7 else c, False) for n, c in rng.sample(pool, rng.randint(1, 3))]
+
+
+def gen_release_v5(rng, variant):
+    svc = pick_service(rng)
+    asc = autoscaler(rng)
+    pn = pods(rng, svc, asc["replicas"])
+    labels = {"service": svc["name"]}
+    rps = rng.uniform(80, 900)
+    ingress_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    app_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    p99 = series(rng, 150, 160, "flat", 0.05, 0)
+    cpu = series(rng, 0.45, 0.5, "flat", 0.05, 2)
+    pg_p95 = series(rng, 12, 14, "flat", 0.1, 0)
+    deploys = [deploy_event(rng, rng.randint(8, 25))]
+    policy = rng.choice(["hold", "rollback", "human"])
+    events = []
+    extra_metrics = []
+    if variant == "analysis_error_no_impact":
+        phase = "Progressing" if rng.random() < 0.7 else "Bake"
+        rollout = live_rollout(rng, svc, phase, deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        if rng.random() < 0.5:
+            alert_name, summ = "CanaryAnalysisError", "Canary analysis failed: metric provider error"
+        else:
+            alert_name, summ = "AppErrorRateHigh", "Application-reported 5xx ratio high"
+            app_5xx = series(rng, 0.002, rng.uniform(0.2, 0.6), "step", 0.05, 4, knee=0.6)
+    elif variant == "analysis_error_current_degrading":
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.03, 0.12), "step", 0.1, 4, knee=0.6)
+        alert_name, summ = "HighErrorRate", "Ingress 5xx ratio above SLO"
+    else:  # crashloop_analysis_error
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        events = [{"type": "Warning", "reason": "BackOff", "object": f"pod/{p}", "count": rng.randint(5, 40),
+                   "offset_min": -rng.randint(1, 10)} for p in pn[:2]]
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.01, 0.05), "linear", 0.1, 4)
+        extra_metrics = [metric("pod_restarts_total", labels, "count", series(rng, 0, rng.randint(15, 80), "linear", 0.0, 0))]
+        alert_name, summ = "PodCrashLooping", "Pods in CrashLoopBackOff"
+    metrics = [
+        metric("ingress_requests_rate", labels, "rps", series(rng, rps, rps, "flat", 0.05)),
+        metric("ingress_5xx_ratio", labels, "ratio", ingress_5xx),
+        metric("ingress_p99_latency_ms", labels, "ms", p99),
+        metric("app_http_5xx_ratio", {**labels, "source": "self_reported"}, "ratio", app_5xx),
+        metric("cpu_utilization_ratio", labels, "ratio_of_requests", cpu),
+        metric("pg_query_duration_p95_ms", {"database": "shared"}, "ms", pg_p95),
+    ] + extra_metrics
+    inp = {"alert": alert(alert_name, svc, "critical", summ), "service": {**svc, "autoscaler": asc,
+           "insufficient_data_policy": policy},
+           "metrics": metrics, "rollout": rollout, "deploys": deploys, "k8s_events": events, "db": None}
+    acts = allowed_actions(svc, asc, pn, rollout, None)
+    inp["allowed_actions"] = acts
+    target_pods(inp, pn)
+    rb = lambda reason: constraint_of(acts, "rollout.abort_and_rollback", reason={"equals": reason})
+    if variant == "analysis_error_no_impact":
+        # error — не результат анализа: откат не выбираем, это не inconclusive и не insufficient_data_policy
+        exp = {"incident_class": "RB-003", "root_cause": "no_user_impact",
+               "acceptable": [{"type": "none", "params": {}}, {"type": "recommend", "params": {}}],
+               "harmful": ["rollout.abort_and_rollback", "workload.restart"]}
+    elif variant == "analysis_error_current_degrading":
+        # как prev_run_success_current_degrading: человек решает, откат ни допустим, ни вреден
+        exp = {"incident_class": "RB-003", "root_cause": "release_regression",
+               "acceptable": [{"type": "recommend", "params": {}}],
+               "harmful": ["workload.restart", "workload.scale_out", "workload.scale_in"]}
+    else:
+        exp = {"incident_class": "RB-004", "root_cause": "crashloop_after_release",
+               "acceptable": [rb("canary_degradation")], "harmful": ["workload.restart", "workload.scale_out"]}
+    return inp, exp
+
+
 # ---------- capacity ----------
 
 def gen_capacity(rng, variant):
@@ -789,13 +879,17 @@ for c, v in [("RB-003", "prev_run_degradation_no_current"), ("RB-003", "prev_run
              ("RB-003", "canary_degradation_threshold"), ("RB-003", "bake_degradation_live")]:
     GENERATORS[(c, v)] = (lambda v: lambda rng: gen_release_v4(rng, v))(v)
 GENERATORS[("RB-006", "load_growth_series_gaps")] = lambda rng: gen_capacity_v4(rng, "load_growth_series_gaps")
+for c, v in [("RB-003", "analysis_error_no_impact"), ("RB-003", "analysis_error_current_degrading"),
+             ("RB-004", "crashloop_analysis_error")]:
+    GENERATORS[(c, v)] = (lambda v: lambda rng: gen_release_v5(rng, v))(v)
 
 
 def build(set_name, seed, fmt="v4"):
     global FORMAT
     FORMAT = fmt
     cases = []
-    for cls, variant, slice_, count in COMPOSITION[set_name] + (COMPOSITION_V4_EXTRA[set_name] if fmt == "v4" else []):
+    for cls, variant, slice_, count in COMPOSITION[set_name] + (COMPOSITION_V4_EXTRA[set_name] if fmt in ("v4", "v5") else []) \
+            + (COMPOSITION_V5_EXTRA[set_name] if fmt == "v5" else []):
         for i in range(count):
             h = hashlib.sha256(f"{set_name}:{seed}:{cls}:{variant}:{i}".encode()).hexdigest()
             rng = random.Random(int(h[:16], 16))

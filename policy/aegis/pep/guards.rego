@@ -9,7 +9,7 @@ forbidden_namespaces := {"kube-system", "aegisops-system"}
 # Обязательные поля входа; отсутствие любого — deny (fail-closed).
 required_paths := [
 	["action", "type"], ["action", "reversibility"], ["action", "lease"],
-	["action", "error_budget_exhausted"], ["action", "degraded_mode"],
+	["action", "error_budget_exhausted"], ["action", "degraded_mode"], ["action", "computed"],
 	["action", "rate_limit", "per_target_per_hour"], ["action", "rate_limit", "cooldown_seconds"],
 	["target", "environment"], ["target", "namespace"], ["target", "namespace_labels"],
 	["level", "granted"], ["level", "by_data"],
@@ -137,6 +137,18 @@ caps contains {"code": "policy_cache_expired", "level": "L1", "detail": "ист�
 caps contains {"code": "lease_missing", "level": "L1", "detail": "нет действующего lease"} if {
 	object.get(input, ["action", "lease"], "") == "required"
 	flag("lease_held") != true
+}
+
+# Откат без анализа текущей ревизии (computed.analysis_run пуст): вердикта нет, решает человек (golden-set.md §16).
+caps contains {"code": "analysis_missing", "level": "L1", "detail": "нет анализа текущей ревизии: откат решает человек"} if {
+	action_type == "rollout.abort_and_rollback"
+	not analysis_run_present
+}
+
+analysis_run_present if {
+	v := object.get(input, ["action", "computed", "analysis_run"], "")
+	is_string(v)
+	v != ""
 }
 
 caps contains {"code": "human_engaged", "level": "L1", "detail": "человек взял инцидент"} if {

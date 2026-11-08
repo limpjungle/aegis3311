@@ -72,7 +72,7 @@ class SetV4Test(unittest.TestCase):
             self.assertEqual(entry["seed"], V3["sets"][name]["seed"])
 
     def test_active_is_v4(self):
-        self.assertNotIn("staged", MANIFEST)
+        self.assertNotEqual(MANIFEST.get("staged", {}).get("set_format"), "v4")  # v4 уже не кандидат (в staged может лежать v5)
         self.assertEqual((MANIFEST["set_format"], MANIFEST["generator_version"], MANIFEST["answer_format"]), ("v4", "4.0.0", "v2"))
         self.assertEqual(MANIFEST["prompt"]["file"], "prompt/system-v4.md")
         self.assertEqual(MANIFEST["prompt"]["sha256"], sha("prompt/system-v4.md"))
@@ -213,10 +213,20 @@ class RunnerV4Test(unittest.TestCase):
         self.assertEqual(len(act["cases"]), 595)
 
     def test_staged_without_candidate_is_refused(self):
-        with self.assertRaisesRegex(run.IntegrityError, "no staged candidate"):
-            run.check_integrity("probe", False, staged=True)
-        code, _, err = self.dry(PROFILES[0], "--staged")
-        self.assertEqual(code, 2, err)
+        # временная база: manifest без блока staged (в репозитории там лежит кандидат v5)
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "data"))
+            man = {k: v for k, v in MANIFEST.items() if k != "staged"}
+            with open(os.path.join(d, "data", "manifest.json"), "w") as f:
+                json.dump(man, f)
+            with open(os.path.join(d, "profiles.json"), "wb") as f:
+                f.write(rb(os.path.join(HERE, "profiles.json")))
+            with self.assertRaisesRegex(run.IntegrityError, "no staged candidate"):
+                run.check_integrity("probe", False, base=d, staged=True)
+            out, err = io.StringIO(), io.StringIO()
+            code = run.run(["--profile", PROFILES[0], "--set", "probe", "--staged", "--dry-run"], env={},
+                           stdout=out, stderr=err, base_dir=d)
+            self.assertEqual(code, 2, err.getvalue())
 
     def test_v4_requests_differ_from_v3_references(self):
         got, r3 = self.emitted(PROFILES[0]), refs_of(PROFILES[0], "v3")

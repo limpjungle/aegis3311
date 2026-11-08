@@ -97,6 +97,8 @@ degraded_mode: allowed                     # только если runbook пр�
 snapshot: [rollout.status, revision_history, analysis_run]
 ```
 
+Без анализа текущей ревизии (`computed.analysis_run` пуст) PEP понижает откат до L1 (cap `analysis_missing`, `policy/aegis/pep/guards.rego`): вердикта нет, откат решает человек. Вердикт анализа `error` (сбой провайдера метрик) отдельный и не `inconclusive`; в каталоге ничего не меняется (golden-set.md §16).
+
 ### 2.2 `workload.scale_out` — увеличение реплик stateless (R1)
 
 ```yaml

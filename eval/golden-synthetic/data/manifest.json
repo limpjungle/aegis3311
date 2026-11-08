@@ -63,6 +63,69 @@
   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850",
   "since": "2026-11-06"
  },
+ "staged": {
+  "status": "candidate",
+  "set_format": "v5",
+  "generator_version": "5.0.0",
+  "answer_format": "v2",
+  "sets": {
+   "probe": {
+    "file": "data/probe-v5.jsonl",
+    "seed": 20261105,
+    "cases": 635,
+    "sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
+    "by_class": {
+     "RB-001": 125,
+     "RB-002": 15,
+     "RB-003": 247,
+     "RB-004": 50,
+     "RB-005": 30,
+     "RB-006": 133,
+     "RB-007": 20,
+     "other": 15
+    },
+    "by_slice": {
+     "adversarial": 50,
+     "confuser": 190,
+     "core": 235,
+     "insufficient": 25,
+     "negative": 135
+    }
+   },
+   "dev": {
+    "file": "data/dev-v5.jsonl",
+    "seed": 20261106,
+    "cases": 147,
+    "sha256": "5cb8a0a80ca2b8d15f171059d9b9799ea00ae4887e57ceb0727b3086043c3f00",
+    "by_class": {
+     "RB-001": 27,
+     "RB-002": 3,
+     "RB-003": 60,
+     "RB-004": 11,
+     "RB-005": 7,
+     "RB-006": 31,
+     "RB-007": 5,
+     "other": 3
+    },
+    "by_slice": {
+     "adversarial": 12,
+     "confuser": 42,
+     "core": 57,
+     "insufficient": 6,
+     "negative": 30
+    }
+   }
+  },
+  "prompt": {
+   "file": "prompt/system-v5.md",
+   "sha256": "c66a8c6dbb620a96be882a9b979df639dc17a9c6c8c6aecace18e6f6ee809ebc",
+   "changes": "verdict error (Argo AnalysisRun Error): not a result, no RB-003 rollback, not inconclusive; RB-004 rollback regardless of verdict"
+  },
+  "answer_schema": {
+   "file": "schema/answer.schema-v2.json",
+   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850"
+  }
+ },
  "prompt_history": [
   {
    "file": "prompt/system-v1.md",

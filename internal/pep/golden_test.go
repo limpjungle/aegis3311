@@ -104,6 +104,7 @@ type acceptable struct {
 }
 
 // loadGolden читает набор только на чтение, сверив sha256 с manifest.json.
+// Имя вида "probe-staged" — кандидат из manifest.staged (набор v5), иначе активный набор.
 func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 	t.Helper()
 	mb, err := os.ReadFile(filepath.Join(goldenDir, "data/manifest.json"))
@@ -116,11 +117,21 @@ func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 			Sha256 string `json:"sha256"`
 			Cases  int    `json:"cases"`
 		} `json:"sets"`
+		Staged struct {
+			Sets map[string]struct {
+				File   string `json:"file"`
+				Sha256 string `json:"sha256"`
+				Cases  int    `json:"cases"`
+			} `json:"sets"`
+		} `json:"staged"`
 	}
 	if err := json.Unmarshal(mb, &m); err != nil {
 		t.Fatal(err)
 	}
 	ms := m.Sets[set]
+	if n, ok := strings.CutSuffix(set, "-staged"); ok {
+		ms = m.Staged.Sets[n]
+	}
 	path := filepath.Join(goldenDir, ms.File)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -160,6 +171,29 @@ func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 		t.Fatalf("%s: кейсов %d (manifest %d), ожидалось %d", set, len(out), ms.Cases, wantCases)
 	}
 	return out
+}
+
+// noAnalysis — откат при пустом computed.analysis_run: у текущей ревизии нет анализа, PEP понижает его до L1.
+func (c goldenCase) noAnalysis(typ string) bool {
+	if typ != "rollout.abort_and_rollback" {
+		return false
+	}
+	comp, _ := c.allowed(typ)["computed"].(map[string]any)
+	ar, _ := comp["analysis_run"].(string)
+	return ar == ""
+}
+
+// requireAnalysisMissing проверяет вердикт отката без анализа: downgrade, L1, cap analysis_missing, ни одного deny.
+func requireAnalysisMissing(v pep.Verdict) string {
+	for _, r := range v.Reasons {
+		if r.Effect == "deny" {
+			return "есть deny: " + r.Code
+		}
+	}
+	if v.Decision != "downgrade" || v.EffectiveLevel != "L1" || !hasReason(v.Reasons, "cap:analysis_missing") {
+		return "вердикт " + v.Decision + "/" + v.EffectiveLevel + ", ожидалось downgrade/L1 с cap analysis_missing"
+	}
+	return ""
 }
 
 func (c goldenCase) allowed(typ string) map[string]any {
@@ -203,11 +237,12 @@ func TestGoldenSetPEP(t *testing.T) {
 	catalogActions := []string{"pgbouncer.resize_pool", "postgres.set_restart_param", "rollout.abort_and_rollback",
 		"workload.restart", "workload.scale_in", "workload.scale_out"}
 	for _, set := range []struct {
-		name  string
-		cases int
-	}{{"probe", 595}, {"dev", 138}} {
+		name    string
+		cases   int
+		missing int // откатов без анализа среди acceptable
+	}{{"probe", 595, 10}, {"dev", 138, 2}, {"probe-staged", 635, 10}, {"dev-staged", 147, 2}} {
 		t.Run(set.name, func(t *testing.T) {
-			bad, checked, unavailable := 0, 0, 0
+			bad, checked, unavailable, missing := 0, 0, 0, 0
 			fail := func(format string, a ...any) {
 				if bad++; bad <= 20 {
 					t.Errorf(format, a...)
@@ -225,6 +260,14 @@ func TestGoldenSetPEP(t *testing.T) {
 					}
 					if acc.Type == "none" || acc.Type == "recommend" {
 						continue
+					}
+					if c.noAnalysis(acc.Type) {
+						missing++
+						if msg := requireAnalysisMissing(v); msg != "" {
+							fail("%s: откат без анализа: %s %+v", c.ID, msg, v.Reasons)
+						}
+					} else if hasReason(v.Reasons, "cap:analysis_missing") {
+						fail("%s: analysis_missing при непустом анализе: %+v", c.ID, v.Reasons)
 					}
 					want, _ := c.allowed(acc.Type)["computed"].(map[string]any)
 					gotB, _ := json.Marshal(v.Action.Computed)
@@ -255,7 +298,10 @@ func TestGoldenSetPEP(t *testing.T) {
 			if checked == 0 || unavailable == 0 {
 				t.Errorf("проверок мало: acceptable=%d unavailable=%d", checked, unavailable)
 			}
-			t.Logf("%s: acceptable=%d, недоступных проверено=%d, ошибок=%d", set.name, checked, unavailable, bad)
+			if missing != set.missing {
+				t.Errorf("откатов без анализа среди acceptable %d, ожидалось %d", missing, set.missing)
+			}
+			t.Logf("%s: acceptable=%d, недоступных проверено=%d, откатов без анализа=%d, ошибок=%d", set.name, checked, unavailable, missing, bad)
 		})
 	}
 }
@@ -277,7 +323,7 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	if len(files) == 0 {
 		t.Skip("нет refs")
 	}
-	total := 0
+	total, missing := 0, 0
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -309,10 +355,20 @@ func TestRefAnswersNoPanic(t *testing.T) {
 			if p.Type != "none" && p.Type != "recommend" && c.allowed(p.Type) == nil && v.Decision != "deny" {
 				t.Errorf("%s: %s вне allowed_actions, вердикт %s", line.ID, p.Type, v.Decision)
 			}
+			if c.noAnalysis(p.Type) {
+				missing++
+				if msg := requireAnalysisMissing(v); msg != "" {
+					t.Errorf("%s: откат без анализа: %s %+v", line.ID, msg, v.Reasons)
+				}
+			}
 		}
 	}
 	if total == 0 {
 		t.Error("не разобрано ни одного ответа")
 	}
-	t.Logf("ответов проверено: %d", total)
+	// 10 откатов crashloop_no_current_analysis у каждого из двух профилей эталонов v4
+	if missing != 20 {
+		t.Errorf("откатов без анализа в ответах %d, ожидалось 20", missing)
+	}
+	t.Logf("ответов проверено: %d, откатов без анализа: %d", total, missing)
 }

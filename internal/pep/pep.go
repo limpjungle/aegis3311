@@ -79,7 +79,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	if !ok {
 		deny("unknown_action", "catalog", "действия %q нет в каталоге", p.Type)
 		if len(ctxProblems) == 0 {
-			if d, err := e.pol.Eval(ctx, e.policyInput(unknownEntry(p.Type), "", c)); err == nil {
+			if d, err := e.pol.Eval(ctx, e.policyInput(unknownEntry(p.Type), "", nil, c)); err == nil {
 				for _, r := range d.Deny {
 					if r.Code == "forbidden_action" {
 						deny(r.Code, "policy", "%s", r.Detail)
@@ -147,7 +147,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	v.Target = &TargetRef{Kind: kind, Namespace: *c.Namespace, Environment: *c.Environment}
 
 	// 8. Политика.
-	d, err := e.pol.Eval(ctx, e.policyInput(entry, kind, c))
+	d, err := e.pol.Eval(ctx, e.policyInput(entry, kind, av.Computed, c))
 	if err != nil {
 		deny("policy_error", "policy", "%v", err)
 		return done()
@@ -321,7 +321,12 @@ func unknownEntry(name string) *catalog.Entry {
 }
 
 // policyInput собирает вход Rego. Контекст к этому моменту валиден (все указатели заполнены).
-func (e *Engine) policyInput(entry *catalog.Entry, kind string, c Context) map[string]any {
+// computed — вычисленные step поля действия (action.computed); nil превращается в пустой объект, не в null.
+func (e *Engine) policyInput(entry *catalog.Entry, kind string, computed map[string]any, c Context) map[string]any {
+	cp := make(map[string]any, len(computed))
+	for k, v := range computed {
+		cp[k] = v
+	}
 	f := c.Flags
 	actions := f.KillSwitch.Actions
 	if actions == nil {
@@ -333,6 +338,7 @@ func (e *Engine) policyInput(entry *catalog.Entry, kind string, c Context) map[s
 			"error_budget_exhausted": entry.ErrorBudgetExhausted, "degraded_mode": entry.DegradedMode,
 			"rate_limit": map[string]any{"per_target_per_hour": entry.RateLimit.PerTargetPerHour,
 				"cooldown_seconds": int(entry.RateLimit.Cooldown.Seconds())},
+			"computed": cp,
 		},
 		"target": map[string]any{"environment": *c.Environment, "namespace": *c.Namespace,
 			"namespace_labels": c.NamespaceLabels, "kind": kind},

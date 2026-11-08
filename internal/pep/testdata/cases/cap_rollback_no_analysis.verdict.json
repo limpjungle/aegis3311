@@ -1,0 +1,40 @@
+{
+ "schema": "aegisops/pep-verdict/v1",
+ "mode": "dry-run",
+ "decision": "downgrade",
+ "action": {
+  "type": "rollout.abort_and_rollback",
+  "version": "1.0.0",
+  "reversibility": "R1",
+  "params": {
+   "scope": null,
+   "pod_name": null,
+   "reason": "canary_degradation",
+   "parameter": null
+  },
+  "computed": {
+   "analysis_run": ""
+  }
+ },
+ "target": {
+  "kind": "argoproj.io/Rollout",
+  "namespace": "shop",
+  "environment": "staging"
+ },
+ "requested_level": "L3",
+ "ceiling": "L3",
+ "effective_level": "L1",
+ "reasons": [
+  {
+   "code": "analysis_missing",
+   "source": "policy",
+   "effect": "cap",
+   "level": "L1",
+   "detail": "нет анализа текущей ревизии: откат решает человек"
+  }
+ ],
+ "catalog_digest": "<digest>",
+ "policy_bundle_digest": "<digest>",
+ "policy_revision": "0.2.0",
+ "input_digest": "<digest>"
+}

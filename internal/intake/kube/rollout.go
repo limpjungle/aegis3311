@@ -157,8 +157,9 @@ func (c *Client) latestAnalysisRun(ctx context.Context, ns, rollout, sel string)
 }
 
 // toAnalysisRun — доменная форма: вердикт и threshold-метрики.
+// Error (сбой провайдера метрик) — отдельный вердикт error, не degradation и не inconclusive.
 func toAnalysisRun(it analysisRunObj) *intake.AnalysisRun {
-	verdict := map[string]string{"Successful": "success", "Failed": "degradation", "Error": "degradation", "Inconclusive": "inconclusive"}[it.Status.Phase]
+	verdict := map[string]string{"Successful": "success", "Failed": "degradation", "Error": "error", "Inconclusive": "inconclusive"}[it.Status.Phase]
 	if verdict == "" {
 		verdict = "running"
 	}

@@ -1,7 +1,7 @@
 # Политики OPA/Rego
 
 - `aegis/autonomy/matrix.rego` — матрица автономности (architecture.md §4.4), запрещённые имена действий, самопроверка инвариантов (prod не выше staging, R3 не выше L1);
-- `aegis/pep/guards.rego` — запреты (`deny`) и понижения уровня (`caps`): kill switch, подтверждение «не остановлен», error budget, деградационный режим, lease, человек в инциденте, circuit breaker, rate limit, cooldown;
+- `aegis/pep/guards.rego` — запреты (`deny`) и понижения уровня (`caps`): kill switch, подтверждение «не остановлен», error budget, деградационный режим, lease, откат без анализа текущей ревизии (`analysis_missing`, L1), человек в инциденте, circuit breaker, rate limit, cooldown;
 - `aegis/pep/decision.rego` — итог `data.aegis.pep.decision`: определён всегда, при любой аномалии входа — `deny` и `L0`.
 
 Форма и величина действия (каталог, границы, цель) проверяются в Go; политика получает нужные поля каталога во входе и не дублирует арифметику.

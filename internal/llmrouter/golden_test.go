@@ -55,6 +55,7 @@ const (
 	promptV3 = "prompt/system-v3.md"
 	schemaV2 = "schema/answer.schema-v2.json"
 	promptV4 = "prompt/system-v4.md"
+	promptV5 = "prompt/system-v5.md" // кандидат (manifest.staged), golden-set.md §16
 )
 
 // probeVersion — версия пробы с замороженными эталонами: набор, промпт и число кейсов.
@@ -372,7 +373,7 @@ func TestActiveAssetsHaveReferences(t *testing.T) {
 func TestActiveAssetsHaveReferencesRejectsUnfrozen(t *testing.T) {
 	copyFS := func(mut func(man *pyjson.Value)) fstest.MapFS {
 		m := fstest.MapFS{}
-		for _, n := range []string{"profiles.json", "data/manifest.json", promptV3, promptV4, schemaV2} {
+		for _, n := range []string{"profiles.json", "data/manifest.json", promptV3, promptV4, promptV5, schemaV2} {
 			b, err := goldensynthetic.FS.ReadFile(n)
 			if err != nil {
 				t.Fatal(err)
@@ -413,10 +414,53 @@ func TestActiveAssetsHaveReferencesRejectsUnfrozen(t *testing.T) {
 		"набор v3 при промпте v4": func(man *pyjson.Value) {
 			man.Get("sets").Set("probe", histOf(man, "sets_history", "data/probe-v3.jsonl"))
 		},
+		"промпт v5 (кандидат) при наборе v4": func(man *pyjson.Value) {
+			sp := man.Get("staged").Get("prompt")
+			man.Get("prompt").Set("file", sp.Get("file"))
+			man.Get("prompt").Set("sha256", sp.Get("sha256"))
+		},
+		"набор v5 при промпте v4": func(man *pyjson.Value) {
+			man.Get("sets").Set("probe", man.Get("staged").Get("sets").Get("probe"))
+		},
 	}
 	for name, mut := range cases {
 		if err := checkActiveReferences(copyFS(mut)); err == nil {
 			t.Errorf("%s: принято без эталонов", name)
+		}
+	}
+}
+
+// Запросы Go (Prepare с настоящими ассетами v5) совпадают с запросами run.py: фикстура requests/<profile>/probe-v5.jsonl
+// — вывод run.py --staged --dry-run --emit-requests, то есть эталон по хешам до записи эталонов v5.
+func TestProbeV5RequestsMatchRunner(t *testing.T) {
+	cases := loadProbeSet(t, "data/probe-v5.jsonl", 635)
+	ctx := context.Background()
+	for _, pp := range probeProfiles {
+		want := map[string]*pyjson.Value{}
+		for _, r := range readJSONL(t, filepath.Join(goldenDir, "requests", pp.name, "probe-v5.jsonl")) {
+			want[r.Get("id").S] = r
+		}
+		if len(want) != len(cases) {
+			t.Fatalf("%s: в фикстуре %d строк, кейсов %d", pp.name, len(want), len(cases))
+		}
+		rg := newRigAssets(t, loadAssetsPinned(t, promptV5, schemaV2), &identityMasker{}, &stubTransport{}, "", nil)
+		for _, c := range cases {
+			req, _ := caseRequest(t, c)
+			p, err := rg.r.Prepare(ctx, req, pp.role)
+			if err != nil {
+				t.Fatalf("%s %s: %v", pp.name, req.IncidentID, err)
+			}
+			w := want[req.IncidentID]
+			if w == nil {
+				t.Fatalf("%s: нет в фикстуре %s", req.IncidentID, pp.name)
+			}
+			if p.NotSent != "" || len(p.Excluded) != 0 || len(p.Dropped) != 0 || p.LabelsDropped != 0 {
+				t.Fatalf("%s %s: NotSent=%q excluded=%d dropped=%d", pp.name, req.IncidentID, p.NotSent, len(p.Excluded), len(p.Dropped))
+			}
+			if p.RequestSHA256 != w.Get("request_sha256").S || fmt.Sprint(p.EstInputTokens) != w.Get("est_input_tokens").Int {
+				t.Fatalf("%s %s: request_sha256 %s != run.py %s; est_input_tokens %d != %s", pp.name, req.IncidentID,
+					p.RequestSHA256, w.Get("request_sha256").S, p.EstInputTokens, w.Get("est_input_tokens").Int)
+			}
 		}
 	}
 }

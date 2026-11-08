@@ -205,3 +205,33 @@ test_history_invalid_counts_denied if {
 		effective(patched([o])) == "L0"
 	}
 }
+
+# ---------- откат без анализа текущей ревизии ----------
+
+rollback(computed) := patched(array.concat(
+	as_action("rollout.abort_and_rollback", "R1", "allowed", "allowed"),
+	[["/action/computed", computed]],
+))
+
+test_rollback_without_analysis_capped if {
+	every c in [{}, {"analysis_run": ""}, {"analysis_run": null}, {"analysis_run": 5}] {
+		inp := rollback(c)
+		cap_codes(inp) == {"analysis_missing"}
+		effective(inp) == "L1"
+		deny_codes(inp) == set()
+	}
+}
+
+test_rollback_with_analysis_not_capped if {
+	cap_codes(rollback({"analysis_run": "ar-1"})) == set()
+}
+
+test_analysis_missing_only_rollback if {
+	cap_codes(patched([["/action/computed", {}]])) == set()
+}
+
+test_missing_computed_denied if {
+	inp := json.remove(base, ["/action/computed"])
+	"input_invalid" in deny_codes(inp)
+	effective(inp) == "L0"
+}

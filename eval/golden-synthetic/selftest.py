@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def fmt_of(case):
-    return case.get("answer_format", "v1")  # у наборов v2, v3 и v4 формат ответа v2
+    return case.get("answer_format", "v1")  # у наборов v2, v3, v4 и v5 формат ответа v2
 
 
 def blank(fmt="v1"):
@@ -83,11 +83,40 @@ def check_v4(set_name, cases):
     return bad
 
 
+ERROR_VARIANTS = {"analysis_error_no_impact", "analysis_error_current_degrading", "crashloop_analysis_error"}
+
+
+def check_v5(set_name, cases):
+    """Инварианты набора v5: надмножество v4, вердикт error только threshold без значимости, откат не допустим при error."""
+    bad = []
+    v4 = {c["id"]: c for c in generate.build(set_name, generate.DEFAULT_SEED[set_name], "v4")}
+    by_id = {c["id"]: c for c in cases}
+    for cid, c4 in v4.items():
+        c5 = by_id.get(cid)
+        if c5 is None:
+            bad.append(f"{cid}: v4 case is missing in v5")
+        elif c5["input"] != c4["input"] or c5["expected"] != c4["expected"]:
+            bad.append(f"{cid}: input/expected differ from v4")
+    for c in cases:
+        ar = (c["input"].get("rollout") or {}).get("analysis_run")
+        if ar and ar["verdict"] == "error":
+            if c["variant"] not in ERROR_VARIANTS:
+                bad.append(f"{c['id']}: verdict error outside the v5 variants")
+            if any(m["test"] != "threshold" or m["holm_significant"] for m in ar["metrics"]):
+                bad.append(f"{c['id']}: verdict error with a non-threshold or significant metric")
+        elif c["variant"] in ERROR_VARIANTS:
+            bad.append(f"{c['id']}: v5 variant without verdict error")
+        if c["variant"] in ("analysis_error_no_impact", "analysis_error_current_degrading") and any(
+                x["type"] == "rollout.abort_and_rollback" for x in c["expected"]["acceptable"]):
+            bad.append(f"{c['id']}: rollback is acceptable with verdict error")
+    return bad
+
+
 def main():
     failures = []
     manifest = json.load(open(os.path.join(HERE, "data", "manifest.json"), encoding="utf-8"))
     for set_name, fmt in (("probe", "v1"), ("dev", "v1"), ("probe", "v2"), ("dev", "v2"), ("probe", "v3"), ("dev", "v3"),
-                          ("probe", "v4"), ("dev", "v4")):
+                          ("probe", "v4"), ("dev", "v4"), ("probe", "v5"), ("dev", "v5")):
         afmt = generate.ANSWER_FORMAT[fmt]  # формат ответа модели; fmt — версия набора
         seed = generate.DEFAULT_SEED[set_name]
         a, b = generate.build(set_name, seed, fmt), generate.build(set_name, seed, fmt)
@@ -107,14 +136,16 @@ def main():
             failures.append(f"{set_name}/{fmt}: no manifest entry for {want_file}")
         elif entry["sha256"] != hashlib.sha256(dump(a)).hexdigest():
             failures.append(f"{set_name}/{fmt}: manifest sha256 differs from generator output")
-        if fmt in ("v3", "v4"):
+        if fmt in ("v3", "v4", "v5"):
             for c in a:
                 if any(k.startswith("_") for k in c["input"]):
                     failures.append(f"{c['id']}: input has service keys starting with '_'")
                 if not isinstance(c["input"].get("service", {}).get("pods"), list):
                     failures.append(f"{c['id']}: no input.service.pods")
-        if fmt == "v4":
+        if fmt in ("v4", "v5"):
             failures += check_v4(set_name, a)
+        if fmt == "v5":
+            failures += check_v5(set_name, a)
         ids = [c["id"] for c in a]
         if len(ids) != len(set(ids)):
             failures.append(f"{set_name}: duplicate ids")

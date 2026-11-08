@@ -504,7 +504,7 @@ func TestAnalysisRunVerdicts(t *testing.T) {
 		}
 		return obj("name", name, "phase", phase, "measurements", ms)
 	}
-	for phase, want := range map[string]string{"Successful": "success", "Failed": "degradation", "Error": "degradation", "Inconclusive": "inconclusive", "Running": "running", "Pending": "running", "": "running"} {
+	for phase, want := range map[string]string{"Successful": "success", "Failed": "degradation", "Error": "error", "Inconclusive": "inconclusive", "Running": "running", "Pending": "running", "": "running"} {
 		runs := []any{analysisRun("ar-new", phase, t0, "geo-svc", []any{m("error-rate", "Failed", "0.01", "[0.07]"), m("latency", "Successful", "120"), m("nodata", "Successful")}),
 			analysisRun("ar-old", "Successful", t0.Add(-time.Hour), "geo-svc", nil),
 			analysisRun("ar-foreign", "Failed", t0.Add(time.Hour), "other", nil)}
@@ -534,6 +534,33 @@ func TestAnalysisRunVerdicts(t *testing.T) {
 			t.Errorf("message в выводе: %s", b)
 		}
 	}
+	// Error: метрика без измерений с value — canary nil, не значимо; вердикт error (не degradation и не inconclusive)
+	errMetric := obj("name", "ingress-5xx", "phase", "Error", "measurements", []any{obj("phase", "Error", "message", inj)})
+	t.Run("Error без value", func(t *testing.T) {
+		runs := []any{analysisRun("ar-err", "Error", t0, "geo-svc", []any{errMetric})}
+		e := rolloutEnv(t, rolloutJSON("Progressing", "h8", "h7", 20, nil), runs)
+		r, err := e.c.Rollout(context.Background(), roSvc(), t0)
+		if err != nil || r.AnalysisRun == nil {
+			t.Fatalf("%v %+v", err, r)
+		}
+		ar := r.AnalysisRun
+		if ar.Verdict != "error" || len(ar.Metrics) != 1 || ar.Metrics[0].Canary != nil || ar.Metrics[0].HolmSignificant {
+			t.Errorf("%+v", ar)
+		}
+	})
+	t.Run("Error в previous_analysis_run", func(t *testing.T) {
+		prev := arWithHash("ar-prev", "Error", "h7", t0.Add(-time.Hour), "geo-svc")
+		prev["status"].(map[string]any)["metricResults"] = []any{errMetric}
+		e := prevEnv(t, rolloutJSON("Progressing", "h8", "h7", 20, nil), bothRS, filteredAR([]map[string]any{prev}))
+		r, err := e.c.Rollout(context.Background(), roSvc(), t0)
+		if err != nil || r.AnalysisRun != nil || r.PreviousAnalysisRun == nil {
+			t.Fatalf("%v %+v", err, r)
+		}
+		p := r.PreviousAnalysisRun
+		if p.Verdict != "error" || len(p.Metrics) != 1 || p.Metrics[0].Canary != nil || p.Metrics[0].HolmSignificant {
+			t.Errorf("%+v", p)
+		}
+	})
 	// нет AnalysisRun у этого Rollout
 	e := rolloutEnv(t, rolloutJSON("Progressing", "h8", "h7", 20, nil), []any{analysisRun("x", "Failed", t0, "other", nil)})
 	if r, _ := e.c.Rollout(context.Background(), roSvc(), t0); r.AnalysisRun != nil {

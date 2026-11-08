@@ -242,7 +242,7 @@
 - **`rollout: null`.** У сервиса с `workload.kind=Deployment` ключ `rollout` присутствует со значением `null` (источник исправен, Rollout нет); ключ отсутствует только если источник не дал данных. В наборе v3 `null` — 214 кейсов, отсутствие ключа — 170 (кейсы с БД).
 - **`previous_analysis_run`.** В наборе v3 ключа нет (в Progressing/Bake анализ задан всегда). Живой intake добавляет его, только когда у текущей ревизии анализа нет; промпт v3 ключ не описывает. Покрыто кандидатом v4 (§15): правило в промпте и 51 кейс в probe-v4 (42 в Progressing, 9 в Bake; dev-v4 — 12): ключ есть во всех кейсах `prev_run_*` (30 + 15), а в `crashloop_no_current_analysis` (10) — не во всех, прежний анализ там success, degradation или отсутствует; кейсы живых данных видны по `k8s.rollout_status = partial` и в отчёте G0 считаются отдельно.
 - **Вердикт `running`.** Живой анализ, который ещё не закончился, имеет `verdict = running`; в наборе v3 такого вердикта нет, промпт v3 о нём молчит. Покрыто кандидатом v4 (§15): правило и 15 кейсов.
-- **Argo `Error`.** `toAnalysisRun` отображает фазу `Error` AnalysisRun в `verdict = degradation` (`internal/intake/kube/rollout.go`); для модели это неотличимо от провала метрики. Вопрос intake, в промпт не закладывается; открыт (§15.7).
+- **Argo `Error`.** До 08.11.2026 `toAnalysisRun` отображал фазу `Error` AnalysisRun в `verdict = degradation` (`internal/intake/kube/rollout.go`); для модели это было неотличимо от провала метрики. Теперь это отдельный вердикт `error` (§16.1); промпт v5 — кандидат (§16).
 - **`null` в сериях.** Статусы `partial`/`truncated` видны только в аудите; модель получает отсутствующий ключ, пустой список или `null` вместо значения в серии. Покрыто кандидатом v4 (§15): правило «Missing data» и 10 кейсов с пропусками в сериях rps/CPU; `partial`/`truncated` остаются в отчёте G0.
 - **Живой `Bake`.** У живого Bake `canary_revision = null`, а `stable_revision` — новая ревизия (в наборе v3 — наоборот). Покрыто кандидатом v4 (§15): 10 кейсов `bake_degradation_live`.
 - **Округление метрик.** Значения серий округляются до 4 значащих цифр (не меньше 2 знаков после запятой, не больше 8); значения набора проходят без изменений. Целые значения печатаются как `416.0`.
@@ -344,8 +344,7 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 
 ### 15.7 Открытые вопросы
 
-- Argo `Error` → `degradation` в `toAnalysisRun`: для модели это неотличимо от провала метрики и ведёт к откату. Решать в intake (отдельный вердикт или `inconclusive`), в промпт не закладывается.
-- PEP/исполнитель откатов с `computed.analysis_run = ""` вне этой задачи: промпт запрещает такой откат для RB-003, но блокировка на стороне платформы нужна отдельно.
+Оба вопроса закрыты в §16: Argo `Error` получил отдельный вердикт `error` (§16.1); откат без анализа текущей ревизии понижается PEP до L1, `analysis_missing` (§16.2).
 
 ### 15.8 Переключение на v4 (08.11.2026)
 
@@ -356,3 +355,87 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 - Роутер (`LoadAssets`) и intake берут промпт v4; ежедневная проба идёт на probe-v4 (595 кейсов, ≈ $0,75 в сутки на оба endpoint'а).
 - **Калибровка v4 — с нуля** в `calibration/<profile>-probe-v4.json`; эталоны — probe-v4 из §15.6. Первая точка — первый ежедневный прогон после попадания коммита в `main`. Freeze — не раньше 20 точек, ориентировочно ≈ 28–30.11.2026; старт shadow сдвигается на 2–3 дня.
 - Тесты: `TestProbeV4Reproducible`, `TestProbeV4ReproducibleRealMasker`, `TestProbeV4ReplayHTTP`, `TestProbeV4MetaMatchesAssets` по эталонам v4 вместо фикстуры запросов; `TestRouteOffAndBudget` считает лимит суток от размера запроса, а не числом под промпт v3.
+
+## 16. Промпт v5 и набор v5 (кандидат, 08.11.2026)
+
+**Статус:** кандидат в блоке `staged` манифеста (`status: candidate`); активны промпт и набор v4 (§15.8). v5 закрывает два вопроса §15.7: Argo `Error` больше не выглядит как `degradation`, а откат без анализа текущей ревизии не зависит от одного промпта. Меняются три вещи сразу: intake (вердикт), PEP (cap) и промпт с набором (модель должна уметь читать новый вердикт). Нового root cause и новой схемы ответа нет.
+
+### 16.1 Вердикт `error` в intake
+
+Отдельный вердикт нужен, потому что `inconclusive` уже занят: по промпту v4 он ведёт по `service.insufficient_data_policy`, а при политике `rollback` — к откату с reason `insufficient_data_policy`. Если склеить с ним Argo `Error`, сбой провайдера метрик при политике `rollback` снова давал бы откат. Вердикт `error` — фаза Argo в нижнем регистре (`internal/intake/kube/rollout.go`, `toAnalysisRun`):
+
+| Фаза AnalysisRun | Вердикт |
+|---|---|
+| `Successful` | `success` |
+| `Failed` | `degradation` |
+| `Error` | `error` (было `degradation`) |
+| `Inconclusive` | `inconclusive` (без изменений) |
+| `Pending`, `Running`, пусто | `running` |
+
+Метрики при `error` — threshold: измерение без `value` даёт `canary = null`, `holm_significant = false`. То же для `previous_analysis_run`.
+
+### 16.2 PEP: cap `analysis_missing`
+
+Для `rollout.abort_and_rollback` правило `analysis_missing` (`policy/aegis/pep/guards.rego`) ограничивает уровень до **L1**, если `action.computed.analysis_run` не непустая строка (нет поля, `null`, не строка, пусто). Go (`policyInput`) передаёт вычисленные поля `step` в `input.action.computed`; поле `["action", "computed"]` обязательно (иначе `input_invalid`). Следствия:
+
+- это `cap`, а не `deny`: вердикт `downgrade` (или `noop`, если запрошен L0), нарушением G0 не является; G0 считает только `deny`;
+- RB-004 без анализа (`crashloop_no_current_analysis`) решается откатом по промпту, но PEP понижает его до L1: решает человек. Это сознательная цена защиты от отката по чужому вердикту;
+- `policy_revision` поднята до `0.2.0`; эталоны вердиктов PEP перегенерированы (изменились только ревизия и digest-заглушки), добавлен кейс `cap_rollback_no_analysis`.
+
+### 16.3 Промпт v5
+
+`prompt/system-v5.md` — побайтная копия `system-v4.md` с двумя правками; формулировка пункта `inconclusive` не менялась.
+
+| Место | Правка |
+|---|---|
+| RB-003, после пункта про `running` | Вердикт `error`: анализ текущей ревизии не удалось выполнить; это не результат и ничего не говорит о релизе; не `inconclusive` (не использовать `canary_insufficient_data`, `insufficient_data_policy`, не следовать `service.insufficient_data_policy`); откат для RB-003 не выбирать; внешние метрики в норме → `no_user_impact`, `none` или `recommend`; ухудшились сразу после релиза → `release_regression`, `recommend` |
+| RB-004, первый пункт | Откат `canary_degradation` при падении подов новой ревизии независимо от наличия `analysis_run` и его вердикта (в том числе `running` и `error`) |
+
+### 16.4 Набор v5
+
+`generate.py --format v5` (версия генератора 5.0.0): надмножество v4. Seed кейса зависит только от `set:seed:класс:вариант:номер`, поэтому все кейсы v4 входят в v5 с тем же `id` и побайтно тем же `input` и `expected`; отличается `generator_version`. Добавлено 40 (9) кейсов, итого **probe-v5 = 635, dev-v5 = 147**. `gen_release` и `gen_release_v4` не менялись; новый сценарий — `gen_release_v5`.
+
+| Вариант (слайс) | probe / dev | Вход | Ожидание |
+|---|---|---|---|
+| `analysis_error_no_impact` (negative) | 20 / 5 | Progressing (70%) или живой Bake, вердикт `error`, 1–3 threshold-метрики (значение чаще `null`); внешние ровные; алерт `CanaryAnalysisError` или `AppErrorRateHigh` со ступенькой self_reported; политика `hold`/`rollback`/`human` случайно | RB-003, `no_user_impact`; допустимо `none`, `recommend`; вредно откат, restart |
+| `analysis_error_current_degrading` (confuser) | 10 / 2 | Progressing, вердикт `error`, ingress 5xx вырос ступенькой, алерт `HighErrorRate` | RB-003, `release_regression`; допустимо `recommend`; вредно restart, scale_out, scale_in (откат ни допустим, ни вреден) |
+| `crashloop_analysis_error` (confuser) | 10 / 2 | Progressing, вердикт `error`, `BackOff` на 2 подах, рост рестартов и ingress 5xx, алерт `PodCrashLooping` | RB-004, `crashloop_after_release`; допустим откат `canary_degradation`; вредно restart, scale_out |
+
+Состав probe-v5: RB-003 247, RB-004 50, остальные классы как в v4; слайсы: negative 135, confuser 190, core 235, adversarial 50, insufficient 25. Dev-v5: RB-003 60, RB-004 11; negative 30, confuser 42. Откат при `error` в RB-003 не допустим ни в одном из кейсов, где политика `rollback` могла бы его подсказать: в `analysis_error_no_impact` есть кейсы с `insufficient_data_policy = rollback`. Размер пробы +6,7% к v4.
+
+### 16.5 Команды и проверки без сети
+
+```bash
+python3 generate.py --set probe --format v5 --out data/probe-v5.jsonl
+python3 generate.py --set dev --format v5 --out data/dev-v5.jsonl
+python3 run.py --profile inceptron-fp8 --set dev --staged                        # платно (оператор)
+python3 run.py --profile inceptron-fp8 --set probe --staged --reference          # эталон кандидата (оператор)
+python3 run.py --profile inceptron-fp8 --set probe --staged --dry-run --emit-requests requests/inceptron-fp8/probe-v5.jsonl   # без ключа и сети
+python3 score.py --cases data/probe-v5.jsonl --pred <прогон v5> --by-variant
+python3 score.py --cases data/probe-v5.jsonl --pred <прогон v5> --ref <эталон v4> --ref-ids-only
+```
+
+Проверки без сети: `python3 -B -m unittest -v test_set_v5 test_set_v4`, `selftest.py`; Go — `TestProbeV5RequestsMatchRunner` и `TestIntakeReproducesRunnerRequestsV5` (запросы Go совпадают с `run.py --staged --dry-run` по `request_sha256` и `est_input_tokens`, фикстуры `requests/<profile>/probe-v5.jsonl`), `TestGoldenSetPEP` (откат без анализа понижается до L1 только там, где `computed.analysis_run` пуст: probe 10, dev 2, probe-staged 10, dev-staged 2), `TestRefAnswersNoPanic` (20 откатов эталонов v4 без анализа), `TestAssembleMatchesGolden` (покрытие `error` в Progressing и живом Bake), `TestAnalysisRunVerdicts`, `TestActiveAssetsHaveReferencesRejectsUnfrozen` (кандидат v5 нельзя сделать активным без эталонов).
+
+### 16.6 Критерии переключения
+
+Прогон кандидата на обоих профилях (оператор, платно, ≈ $1 вместе с dev):
+
+- вредных ответов 0;
+- откат ни разу не выбран в `analysis_error_no_impact`, `analysis_error_current_degrading` и в вариантах без вердикта из v4 (`prev_run_degradation_no_current`, `prev_run_success_current_degrading`, `analysis_running`);
+- на кейсах с `error` нет `canary_insufficient_data` и `insufficient_data_policy`;
+- `crashloop_analysis_error` и `crashloop_no_current_analysis` решаются откатом;
+- на подмножестве v4 (`--ref-ids-only` против эталонов v4) первопричина и допустимость не ниже более чем на 1 п. п.;
+- отчёт по `--by-variant` утверждён оператором.
+
+### 16.7 Порядок переключения и открытые вопросы
+
+Переключение — отдельным коммитом, как §15.8: `staged` → верхний уровень manifest, v4 → `sets_history` / `prompt_history`, `--format` по умолчанию `v5`, эталоны v5 вместо фикстур запросов, правки `architecture.md` §6.3 и `eval.md`. Калибровка v5 начинается с нуля.
+
+Открытые вопросы:
+
+1. Intake отдаёт `error` уже сейчас, при активном промпте v4 (shadow L0). Промпт v4 про `error` не знает; это безопаснее прежнего ложного `degradation`, но поведение модели на новом значении не проверено до переключения.
+2. PEP не страхует откат при вердикте `error` (имя анализа есть, `analysis_missing` не срабатывает). Нужен вердикт анализа в `step.TargetState`; отдельная задача.
+3. Семантику Argo `Error` при Progressing нужно проверить на живом кластере.
+4. threshold-форма Argo `Inconclusive` не покрыта набором.
+5. Проба дороже на 6,7%; калибровка v5 — с нуля при переключении (freeze сдвигается).

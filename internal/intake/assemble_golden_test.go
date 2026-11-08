@@ -173,16 +173,18 @@ func TestAssembleMatchesGolden(t *testing.T) {
 	for _, f := range []struct {
 		file string
 		n    int
-	}{{"probe-v3.jsonl", 480}, {"dev-v3.jsonl", 113}, {"probe-v4.jsonl", 595}, {"dev-v4.jsonl", 138}} {
+	}{{"probe-v3.jsonl", 480}, {"dev-v3.jsonl", 113}, {"probe-v4.jsonl", 595}, {"dev-v4.jsonl", 138}, {"probe-v5.jsonl", 635}, {"dev-v5.jsonl", 147}} {
 		cases := loadCases(t, f.file)
 		if len(cases) != f.n {
 			t.Fatalf("%s: кейсов %d, ожидается %d", f.file, len(cases), f.n)
 		}
 		var cov v4Coverage
+		var cov5 v5Coverage
 		for _, c := range cases {
 			id := c.Get("id").S
 			in := c.Get("input")
 			cov.add(in)
+			cov5.add(in)
 			rawIn := pyjson.Marshal(in, pyjson.Canonical)
 			s := snapshotFromGolden(t, rawIn)
 			req, st, err := Assemble(id, s, cat, llmrouter.ModeHybrid)
@@ -222,8 +224,11 @@ func TestAssembleMatchesGolden(t *testing.T) {
 				}
 			}
 		}
-		if strings.HasSuffix(f.file, "-v4.jsonl") {
+		if strings.HasSuffix(f.file, "-v4.jsonl") || strings.HasSuffix(f.file, "-v5.jsonl") {
 			cov.require(t, f.file)
+		}
+		if strings.HasSuffix(f.file, "-v5.jsonl") {
+			cov5.require(t, f.file)
 		}
 	}
 }
@@ -273,6 +278,40 @@ func (c *v4Coverage) require(t *testing.T, file string) {
 	}
 	t.Logf("%s: prev Progressing %d, prev Bake %d, running %d, null в сериях %d, живой Bake %d",
 		file, c.prevProgressing, c.prevBake, c.running, c.seriesNull, c.liveBake)
+}
+
+// v5Coverage — покрытие формы входа набора v5: вердикт error (Argo Error) в Progressing и в живом Bake.
+type v5Coverage struct {
+	errorProgressing, errorBake int
+}
+
+func (c *v5Coverage) add(in *pyjson.Value) {
+	ro := in.Get("rollout")
+	if ro == nil || ro.Kind != pyjson.Object {
+		return
+	}
+	ar := ro.Get("analysis_run")
+	if ar == nil || ar.Kind != pyjson.Object || ar.Get("verdict").S != "error" {
+		return
+	}
+	switch ro.Get("phase").S {
+	case "Progressing":
+		c.errorProgressing++
+	case "Bake":
+		if ro.Get("canary_revision").Kind == pyjson.Null {
+			c.errorBake++
+		}
+	}
+}
+
+func (c *v5Coverage) require(t *testing.T, file string) {
+	t.Helper()
+	for name, n := range map[string]int{"verdict error в Progressing": c.errorProgressing, "verdict error в Bake с canary_revision null": c.errorBake} {
+		if n == 0 {
+			t.Errorf("%s: набор не покрывает %s", file, name)
+		}
+	}
+	t.Logf("%s: error Progressing %d, error Bake %d", file, c.errorProgressing, c.errorBake)
 }
 
 // firstDiff печатает окрестность первого расхождения a с b.

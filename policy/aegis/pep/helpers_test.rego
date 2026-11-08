@@ -10,6 +10,7 @@ base := {
 		"error_budget_exhausted": "allowed",
 		"degraded_mode": "allowed",
 		"rate_limit": {"per_target_per_hour": 4, "cooldown_seconds": 600},
+		"computed": {},
 	},
 	"target": {
 		"environment": "staging",

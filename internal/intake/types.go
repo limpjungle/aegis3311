@@ -85,7 +85,7 @@ type AnalysisMetric struct {
 
 type AnalysisRun struct {
 	Name    string           `json:"name"`
-	Verdict string           `json:"verdict"` // success | degradation | inconclusive | running
+	Verdict string           `json:"verdict"` // success | degradation | inconclusive | error | running
 	Metrics []AnalysisMetric `json:"metrics"`
 }
 

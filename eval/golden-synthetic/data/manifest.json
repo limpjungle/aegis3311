@@ -1,20 +1,20 @@
 {
  "generated_on": "2026-11-08",
- "generator_version": "4.0.0",
- "set_format": "v4",
+ "generator_version": "5.0.0",
+ "set_format": "v5",
  "data_class": "internal",
  "synthetic": true,
  "sets": {
   "probe": {
-   "file": "data/probe-v4.jsonl",
+   "file": "data/probe-v5.jsonl",
    "seed": 20261105,
-   "cases": 595,
-   "sha256": "32546136d95af37390d53223c029b4219da21e64656d2b665feccab54d362dba",
+   "cases": 635,
+   "sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
    "by_class": {
     "RB-001": 125,
     "RB-002": 15,
-    "RB-003": 217,
-    "RB-004": 40,
+    "RB-003": 247,
+    "RB-004": 50,
     "RB-005": 30,
     "RB-006": 133,
     "RB-007": 20,
@@ -22,22 +22,22 @@
    },
    "by_slice": {
     "adversarial": 50,
-    "confuser": 170,
+    "confuser": 190,
     "core": 235,
     "insufficient": 25,
-    "negative": 115
+    "negative": 135
    }
   },
   "dev": {
-   "file": "data/dev-v4.jsonl",
+   "file": "data/dev-v5.jsonl",
    "seed": 20261106,
-   "cases": 138,
-   "sha256": "295f7dcaf605409a7722ac0ce33947f1e07faaddc173f6cd9a1443618fc3e114",
+   "cases": 147,
+   "sha256": "5cb8a0a80ca2b8d15f171059d9b9799ea00ae4887e57ceb0727b3086043c3f00",
    "by_class": {
     "RB-001": 27,
     "RB-002": 3,
-    "RB-003": 53,
-    "RB-004": 9,
+    "RB-003": 60,
+    "RB-004": 11,
     "RB-005": 7,
     "RB-006": 31,
     "RB-007": 5,
@@ -45,86 +45,23 @@
    },
    "by_slice": {
     "adversarial": 12,
-    "confuser": 38,
+    "confuser": 42,
     "core": 57,
     "insufficient": 6,
-    "negative": 25
+    "negative": 30
    }
   }
  },
  "prompt": {
-  "file": "prompt/system-v4.md",
-  "sha256": "446f4ba56095771d700063544d1ffb445cc65e4058e95fa7ad0083d111b9272f",
+  "file": "prompt/system-v5.md",
+  "sha256": "c66a8c6dbb620a96be882a9b979df639dc17a9c6c8c6aecace18e6f6ee809ebc",
   "since": "2026-11-08",
-  "changes": "previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data"
+  "changes": "verdict error (Argo AnalysisRun Error): not a result, no RB-003 rollback, not inconclusive; RB-004 rollback regardless of verdict"
  },
  "answer_schema": {
   "file": "schema/answer.schema-v2.json",
   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850",
   "since": "2026-11-06"
- },
- "staged": {
-  "status": "candidate",
-  "set_format": "v5",
-  "generator_version": "5.0.0",
-  "answer_format": "v2",
-  "sets": {
-   "probe": {
-    "file": "data/probe-v5.jsonl",
-    "seed": 20261105,
-    "cases": 635,
-    "sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
-    "by_class": {
-     "RB-001": 125,
-     "RB-002": 15,
-     "RB-003": 247,
-     "RB-004": 50,
-     "RB-005": 30,
-     "RB-006": 133,
-     "RB-007": 20,
-     "other": 15
-    },
-    "by_slice": {
-     "adversarial": 50,
-     "confuser": 190,
-     "core": 235,
-     "insufficient": 25,
-     "negative": 135
-    }
-   },
-   "dev": {
-    "file": "data/dev-v5.jsonl",
-    "seed": 20261106,
-    "cases": 147,
-    "sha256": "5cb8a0a80ca2b8d15f171059d9b9799ea00ae4887e57ceb0727b3086043c3f00",
-    "by_class": {
-     "RB-001": 27,
-     "RB-002": 3,
-     "RB-003": 60,
-     "RB-004": 11,
-     "RB-005": 7,
-     "RB-006": 31,
-     "RB-007": 5,
-     "other": 3
-    },
-    "by_slice": {
-     "adversarial": 12,
-     "confuser": 42,
-     "core": 57,
-     "insufficient": 6,
-     "negative": 30
-    }
-   }
-  },
-  "prompt": {
-   "file": "prompt/system-v5.md",
-   "sha256": "c66a8c6dbb620a96be882a9b979df639dc17a9c6c8c6aecace18e6f6ee809ebc",
-   "changes": "verdict error (Argo AnalysisRun Error): not a result, no RB-003 rollback, not inconclusive; RB-004 rollback regardless of verdict"
-  },
-  "answer_schema": {
-   "file": "schema/answer.schema-v2.json",
-   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850"
-  }
  },
  "prompt_history": [
   {
@@ -148,6 +85,14 @@
    "changes": "answer format v2: the model chooses only the action and discrete params (scope, pod_name, reason, parameter); sizes and identifiers come from `computed`",
    "until": "2026-11-08",
    "reason": "decision 2026-11-08: prompt v4 and set v4 (previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data); probe-v4 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §15.4 met, report approved by the operator"
+  },
+  {
+   "file": "prompt/system-v4.md",
+   "sha256": "446f4ba56095771d700063544d1ffb445cc65e4058e95fa7ad0083d111b9272f",
+   "since": "2026-11-08",
+   "changes": "previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data",
+   "until": "2026-11-08",
+   "reason": "decision 2026-11-08: Argo AnalysisRun Error gets its own verdict error (was degradation); prompt v5 and set v5 (analysis_error_* and crashloop_analysis_error); probe-v5 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §16.6 met, report approved by the operator"
   }
  ],
  "sets_history": [
@@ -314,6 +259,61 @@
     }
    },
    "reason": "decision 2026-11-08: prompt v4 and set v4 (previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data); probe-v4 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §15.4 met, report approved by the operator"
+  },
+  {
+   "until": "2026-11-08",
+   "set_format": "v4",
+   "answer_format": "v2",
+   "generator_version": "4.0.0",
+   "sets": {
+    "probe": {
+     "file": "data/probe-v4.jsonl",
+     "seed": 20261105,
+     "cases": 595,
+     "sha256": "32546136d95af37390d53223c029b4219da21e64656d2b665feccab54d362dba",
+     "by_class": {
+      "RB-001": 125,
+      "RB-002": 15,
+      "RB-003": 217,
+      "RB-004": 40,
+      "RB-005": 30,
+      "RB-006": 133,
+      "RB-007": 20,
+      "other": 15
+     },
+     "by_slice": {
+      "adversarial": 50,
+      "confuser": 170,
+      "core": 235,
+      "insufficient": 25,
+      "negative": 115
+     }
+    },
+    "dev": {
+     "file": "data/dev-v4.jsonl",
+     "seed": 20261106,
+     "cases": 138,
+     "sha256": "295f7dcaf605409a7722ac0ce33947f1e07faaddc173f6cd9a1443618fc3e114",
+     "by_class": {
+      "RB-001": 27,
+      "RB-002": 3,
+      "RB-003": 53,
+      "RB-004": 9,
+      "RB-005": 7,
+      "RB-006": 31,
+      "RB-007": 5,
+      "other": 3
+     },
+     "by_slice": {
+      "adversarial": 12,
+      "confuser": 38,
+      "core": 57,
+      "insufficient": 6,
+      "negative": 25
+     }
+    }
+   },
+   "reason": "decision 2026-11-08: Argo AnalysisRun Error gets its own verdict error (was degradation); prompt v5 and set v5 (analysis_error_* and crashloop_analysis_error); probe-v5 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §16.6 met, report approved by the operator"
   }
  ],
  "answer_schema_history": [

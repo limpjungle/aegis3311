@@ -38,8 +38,8 @@ type GoldenCase struct {
 }
 
 // readGolden проверяет sha256 набора по manifest.json и возвращает кейсы (файлы открываются только на чтение).
-// Имя вида "probe-v3" — архивный набор v3 из manifest.sets_history, "probe-staged" — кандидат из manifest.staged
-// (v5), иначе — активный набор (v4 с 08.11.2026).
+// Имя вида "probe-v4" — архивный набор этой версии из manifest.sets_history, "probe-staged" — кандидат из
+// manifest.staged, иначе — активный набор (v5 с 08.11.2026).
 func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 	t.Helper()
 	mb, err := os.ReadFile(filepath.Join(goldenDir, "data/manifest.json"))
@@ -68,10 +68,10 @@ func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 	if n, ok := strings.CutSuffix(set, "-staged"); ok {
 		sets, name = m.Staged.Sets, n
 	}
-	if n, ok := strings.CutSuffix(set, "-v3"); ok {
-		sets, name = nil, n
+	if i := strings.LastIndex(set, "-v"); i > 0 {
+		sets, name = nil, set[:i]
 		for _, h := range m.History {
-			if h.SetFormat == "v3" {
+			if h.SetFormat == set[i+1:] {
 				sets = h.Sets
 			}
 		}
@@ -154,7 +154,7 @@ func TestGoldenPodsConsistent(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 595}, {"dev", 138}, {"probe-v3", 480}, {"dev-v3", 113}, {"probe-staged", 635}, {"dev-staged", 147}} {
+	}{{"probe", 635}, {"dev", 147}, {"probe-v3", 480}, {"dev-v3", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
 		t.Run(set.name, func(t *testing.T) {
 			for _, c := range readGolden(t, set.name, set.cases) {
 				in := c.Input
@@ -188,7 +188,7 @@ func TestGoldenSetCrossCheck(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 595}, {"dev", 138}, {"probe-v3", 480}, {"dev-v3", 113}, {"probe-staged", 635}, {"dev-staged", 147}} {
+	}{{"probe", 635}, {"dev", 147}, {"probe-v3", 480}, {"dev-v3", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad := 0
 			for _, c := range readGolden(t, set.name, set.cases) {
@@ -227,7 +227,7 @@ func TestGoldenAnalysisVerdict(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 595}, {"probe-staged", 635}} {
+	}{{"probe-v4", 595}, {"probe", 635}} {
 		t.Run(set.name, func(t *testing.T) {
 			seen := map[string]int{}
 			for _, c := range readGolden(t, set.name, set.cases) {
@@ -248,7 +248,7 @@ func TestGoldenAnalysisVerdict(t *testing.T) {
 					seen[v]++
 				}
 			}
-			if seen["degradation"] == 0 || seen["inconclusive"] == 0 || seen["running"] == 0 || (set.name == "probe-staged" && seen["error"] == 0) {
+			if seen["degradation"] == 0 || seen["inconclusive"] == 0 || seen["running"] == 0 || (set.name == "probe" && seen["error"] == 0) {
 				t.Errorf("покрытие вердиктов: %v", seen)
 			}
 			t.Logf("%s: %v", set.name, seen)

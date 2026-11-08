@@ -55,7 +55,7 @@ const (
 	promptV3 = "prompt/system-v3.md"
 	schemaV2 = "schema/answer.schema-v2.json"
 	promptV4 = "prompt/system-v4.md"
-	promptV5 = "prompt/system-v5.md" // кандидат (manifest.staged), golden-set.md §16
+	promptV5 = "prompt/system-v5.md"
 )
 
 // probeVersion — версия пробы с замороженными эталонами: набор, промпт и число кейсов.
@@ -69,6 +69,7 @@ type probeVersion struct {
 var (
 	probeV3 = probeVersion{"v3", "data/probe-v3.jsonl", promptV3, 480, map[string]int{"inceptron-fp8": 1, "wafer-nvfp4": 0}}
 	probeV4 = probeVersion{"v4", "data/probe-v4.jsonl", promptV4, 595, map[string]int{"inceptron-fp8": 0, "wafer-nvfp4": 0}}
+	probeV5 = probeVersion{"v5", "data/probe-v5.jsonl", promptV5, 635, map[string]int{"inceptron-fp8": 1, "wafer-nvfp4": 0}}
 )
 
 func (v probeVersion) load(t testing.TB) []*pyjson.Value { return loadProbeSet(t, v.setFile, v.cases) }
@@ -211,6 +212,7 @@ var probeProfiles = []struct {
 
 func TestProbeV3MetaMatchesAssets(t *testing.T) { testProbeMetaMatchesAssets(t, probeV3) }
 func TestProbeV4MetaMatchesAssets(t *testing.T) { testProbeMetaMatchesAssets(t, probeV4) }
+func TestProbeV5MetaMatchesAssets(t *testing.T) { testProbeMetaMatchesAssets(t, probeV5) }
 
 func testProbeMetaMatchesAssets(t *testing.T, v probeVersion) {
 	a := v.assets(t)
@@ -252,6 +254,9 @@ func TestProbeV3Reproducible(t *testing.T) { testProbeReproducible(t, probeV3) }
 // Эталоны probe-v4 воспроизводятся побайтно: request_sha256 и est_input_tokens каждого кейса (заменяет прежнюю
 // сверку с фикстурой запросов run.py --staged --dry-run, golden-set.md §15.5).
 func TestProbeV4Reproducible(t *testing.T) { testProbeReproducible(t, probeV4) }
+
+// Эталоны probe-v5 (активная проба с 08.11.2026, golden-set.md §16.8) — заменяют фикстуру запросов кандидата.
+func TestProbeV5Reproducible(t *testing.T) { testProbeReproducible(t, probeV5) }
 
 func testProbeReproducible(t *testing.T, v probeVersion) {
 	cases := v.load(t)
@@ -406,61 +411,23 @@ func TestActiveAssetsHaveReferencesRejectsUnfrozen(t *testing.T) {
 		return nil
 	}
 	cases := map[string]func(man *pyjson.Value){
-		"промпт v3 при наборе v4": func(man *pyjson.Value) {
-			hp := histOf(man, "prompt_history", promptV3)
+		"промпт v4 при наборе v5": func(man *pyjson.Value) {
+			hp := histOf(man, "prompt_history", promptV4)
 			man.Get("prompt").Set("file", hp.Get("file"))
 			man.Get("prompt").Set("sha256", hp.Get("sha256"))
 		},
-		"набор v3 при промпте v4": func(man *pyjson.Value) {
-			man.Get("sets").Set("probe", histOf(man, "sets_history", "data/probe-v3.jsonl"))
+		"набор v4 при промпте v5": func(man *pyjson.Value) {
+			man.Get("sets").Set("probe", histOf(man, "sets_history", "data/probe-v4.jsonl"))
 		},
-		"промпт v5 (кандидат) при наборе v4": func(man *pyjson.Value) {
-			sp := man.Get("staged").Get("prompt")
-			man.Get("prompt").Set("file", sp.Get("file"))
-			man.Get("prompt").Set("sha256", sp.Get("sha256"))
-		},
-		"набор v5 при промпте v4": func(man *pyjson.Value) {
-			man.Get("sets").Set("probe", man.Get("staged").Get("sets").Get("probe"))
+		"промпт v3 при наборе v5": func(man *pyjson.Value) {
+			hp := histOf(man, "prompt_history", promptV3)
+			man.Get("prompt").Set("file", hp.Get("file"))
+			man.Get("prompt").Set("sha256", hp.Get("sha256"))
 		},
 	}
 	for name, mut := range cases {
 		if err := checkActiveReferences(copyFS(mut)); err == nil {
 			t.Errorf("%s: принято без эталонов", name)
-		}
-	}
-}
-
-// Запросы Go (Prepare с настоящими ассетами v5) совпадают с запросами run.py: фикстура requests/<profile>/probe-v5.jsonl
-// — вывод run.py --staged --dry-run --emit-requests, то есть эталон по хешам до записи эталонов v5.
-func TestProbeV5RequestsMatchRunner(t *testing.T) {
-	cases := loadProbeSet(t, "data/probe-v5.jsonl", 635)
-	ctx := context.Background()
-	for _, pp := range probeProfiles {
-		want := map[string]*pyjson.Value{}
-		for _, r := range readJSONL(t, filepath.Join(goldenDir, "requests", pp.name, "probe-v5.jsonl")) {
-			want[r.Get("id").S] = r
-		}
-		if len(want) != len(cases) {
-			t.Fatalf("%s: в фикстуре %d строк, кейсов %d", pp.name, len(want), len(cases))
-		}
-		rg := newRigAssets(t, loadAssetsPinned(t, promptV5, schemaV2), &identityMasker{}, &stubTransport{}, "", nil)
-		for _, c := range cases {
-			req, _ := caseRequest(t, c)
-			p, err := rg.r.Prepare(ctx, req, pp.role)
-			if err != nil {
-				t.Fatalf("%s %s: %v", pp.name, req.IncidentID, err)
-			}
-			w := want[req.IncidentID]
-			if w == nil {
-				t.Fatalf("%s: нет в фикстуре %s", req.IncidentID, pp.name)
-			}
-			if p.NotSent != "" || len(p.Excluded) != 0 || len(p.Dropped) != 0 || p.LabelsDropped != 0 {
-				t.Fatalf("%s %s: NotSent=%q excluded=%d dropped=%d", pp.name, req.IncidentID, p.NotSent, len(p.Excluded), len(p.Dropped))
-			}
-			if p.RequestSHA256 != w.Get("request_sha256").S || fmt.Sprint(p.EstInputTokens) != w.Get("est_input_tokens").Int {
-				t.Fatalf("%s %s: request_sha256 %s != run.py %s; est_input_tokens %d != %s", pp.name, req.IncidentID,
-					p.RequestSHA256, w.Get("request_sha256").S, p.EstInputTokens, w.Get("est_input_tokens").Int)
-			}
 		}
 	}
 }
@@ -498,12 +465,14 @@ func openRouterReply(ref *pyjson.Value) []byte {
 
 func TestProbeV3ReplayHTTP(t *testing.T) { testProbeReplayHTTP(t, probeV3) }
 
-// Ответы эталонов probe-v4 проигрываются через HTTP на активных ассетах v4 (как роутер в эксплуатации).
-func TestProbeV4ReplayHTTP(t *testing.T) {
-	if a := loadAssets(t); a.PromptFile != promptV4 {
-		t.Fatalf("активный промпт %s, ожидается %s", a.PromptFile, promptV4)
+func TestProbeV4ReplayHTTP(t *testing.T) { testProbeReplayHTTP(t, probeV4) }
+
+// Ответы эталонов probe-v5 проигрываются через HTTP на активных ассетах v5 (как роутер в эксплуатации).
+func TestProbeV5ReplayHTTP(t *testing.T) {
+	if a := loadAssets(t); a.PromptFile != promptV5 {
+		t.Fatalf("активный промпт %s, ожидается %s", a.PromptFile, promptV5)
 	}
-	testProbeReplayHTTP(t, probeV4)
+	testProbeReplayHTTP(t, probeV5)
 }
 
 func testProbeReplayHTTP(t *testing.T, v probeVersion) {

@@ -78,9 +78,9 @@ func openTestRuntime(t testing.TB, tr openrouter.Transport, assets ...*openroute
 }
 
 // Запрос, собранный intake, воспроизводит request_sha256 и est_input_tokens эталонов пробы (настоящий маскировщик,
-// роль primary): v4 — активные ассеты (переключение 08.11.2026), v3 — архив на закреплённом промпте v3.
+// роль primary): v5 — активные ассеты (переключение 08.11.2026), v3 и v4 — архив на закреплённых промптах.
 func TestIntakeReproducesProbeRefs(t *testing.T) {
-	for _, v := range []struct{ name, prompt string }{{"v3", "prompt/system-v3.md"}, {"v4", "prompt/system-v4.md"}} {
+	for _, v := range []struct{ name, prompt string }{{"v3", "prompt/system-v3.md"}, {"v4", "prompt/system-v4.md"}, {"v5", "prompt/system-v5.md"}} {
 		t.Run(v.name, func(t *testing.T) { testIntakeReproducesProbeRefs(t, v.name, v.prompt) })
 	}
 }
@@ -132,55 +132,6 @@ func testIntakeReproducesProbeRefs(t *testing.T, ver, prompt string) {
 		w := want[id]
 		if w == nil || p.RequestSHA256 != w.Get("request_sha256").S || fmt.Sprint(p.EstInputTokens) != w.Get("est_input_tokens").Int {
 			t.Fatalf("%s: request_sha256 %s (est %d) != эталон probe-%s", id, p.RequestSHA256, p.EstInputTokens, ver)
-		}
-	}
-}
-
-// Запрос, собранный intake из кейса probe-v5, совпадает с запросом run.py --staged (фикстура requests/inceptron-fp8):
-// настоящий маскировщик, роль primary, промпт v5 (кандидат) через Deps.Assets. Эталонов v5 ещё нет, поэтому сверка с фикстурой.
-func TestIntakeReproducesRunnerRequestsV5(t *testing.T) {
-	a, err := openrouter.LoadAssetsPinned(goldensynthetic.FS, "prompt/system-v5.md", "schema/answer.schema-v2.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, _, _ := openTestRuntime(t, &stubTr{}, a)
-	cat := catalog.MustLoadEmbedded()
-	want := map[string]*pyjson.Value{}
-	b, err := os.ReadFile(filepath.Join("..", "..", "eval", "golden-synthetic", "requests", "inceptron-fp8", "probe-v5.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ln := range bytes.Split(b, []byte("\n")) {
-		if len(bytes.TrimSpace(ln)) == 0 {
-			continue
-		}
-		v, err := pyjson.Parse(ln)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want[v.Get("id").S] = v
-	}
-	cases := loadCases(t, "probe-v5.jsonl")
-	if len(want) != 635 || len(cases) != 635 {
-		t.Fatalf("фикстура %d, кейсов %d", len(want), len(cases))
-	}
-	for _, c := range cases {
-		id := c.Get("id").S
-		s := snapshotFromGolden(t, pyjson.Marshal(c.Get("input"), pyjson.Canonical))
-		req, _, err := Assemble(id, s, cat, llmrouter.ModeHybrid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p, err := rt.Router.Prepare(context.Background(), req, llmrouter.RolePrimary)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if p.NotSent != "" || len(p.Excluded) != 0 || len(p.Dropped) != 0 || p.LabelsDropped != 0 {
-			t.Fatalf("%s: NotSent=%q excluded=%d dropped=%d labels=%d", id, p.NotSent, len(p.Excluded), len(p.Dropped), p.LabelsDropped)
-		}
-		w := want[id]
-		if w == nil || p.RequestSHA256 != w.Get("request_sha256").S || fmt.Sprint(p.EstInputTokens) != w.Get("est_input_tokens").Int {
-			t.Fatalf("%s: request_sha256 %s (est %d) != run.py", id, p.RequestSHA256, p.EstInputTokens)
 		}
 	}
 }

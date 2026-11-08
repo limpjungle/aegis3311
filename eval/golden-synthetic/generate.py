@@ -5,8 +5,8 @@
 Только стандартная библиотека. Все данные синтетические, без ПДн (класс internal).
 
 Пример:
-    python3 generate.py --set probe --out data/probe-v4.jsonl                # набор v4 (по умолчанию)
-    python3 generate.py --set probe --format v5 --out data/probe-v5.jsonl    # набор v5 (кандидат)
+    python3 generate.py --set probe --out data/probe-v5.jsonl                # набор v5 (по умолчанию)
+    python3 generate.py --set probe --format v4 --out data/probe-v4.jsonl    # воспроизвести набор v4 байт-в-байт
     python3 generate.py --set probe --format v3 --out data/probe-v3.jsonl    # воспроизвести набор v3 байт-в-байт
     python3 generate.py --set probe --format v2 --out data/probe-v2.jsonl    # воспроизвести набор v2 байт-в-байт
     python3 generate.py --set probe --format v1 --out data/probe-v1.jsonl    # воспроизвести набор v1
@@ -15,11 +15,11 @@
 (database, analysis_run) вычисляет детерминированное правило шага каталога (функции step_*), а модель
 выбирает только действие и дискретные параметры: scope, pod_name, reason, parameter.
 
-Набор v5 (кандидат, golden-set.md §16) — надмножество v4: кейсы v4 входят с тем же id и побайтно тем же input/expected
+Набор v5 (активен с 08.11.2026, golden-set.md §16) — надмножество v4: кейсы v4 входят с тем же id и побайтно тем же input/expected
 (отличается generator_version), добавлены кейсы COMPOSITION_V5_EXTRA (вердикт анализа error). Формат ответа v2, схема та же.
-Активен по-прежнему v4: v5 лежит в staged-блоке manifest.
+v4 и старше — в sets_history manifest.
 
-Набор v4 (активен с 08.11.2026, golden-set.md §15) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
+Набор v4 (активен 08.11.2026 до перехода на v5, golden-set.md §15) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
 input/expected (отличается generator_version), добавлены кейсы COMPOSITION_V4_EXTRA (previous_analysis_run, verdict
 running, analysis_run = null, threshold-анализ, живой Bake, пропуски в сериях). Формат ответа v2, схема та же.
 
@@ -35,7 +35,7 @@ import random
 
 GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0", "v4": "4.0.0", "v5": "5.0.0"}
 ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2", "v4": "v2", "v5": "v2"}  # формат ответа модели; v3 отличается только входом
-FORMAT = "v4"  # переключается в build()
+FORMAT = "v5"  # переключается в build()
 
 # Состав наборов: (класс, вариант, слайс, количество)
 COMPOSITION = {
@@ -884,7 +884,7 @@ for c, v in [("RB-003", "analysis_error_no_impact"), ("RB-003", "analysis_error_
     GENERATORS[(c, v)] = (lambda v: lambda rng: gen_release_v5(rng, v))(v)
 
 
-def build(set_name, seed, fmt="v4"):
+def build(set_name, seed, fmt="v5"):
     global FORMAT
     FORMAT = fmt
     cases = []
@@ -915,7 +915,7 @@ def main():
     ap.add_argument("--set", choices=sorted(COMPOSITION), required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v4")
+    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v5")
     args = ap.parse_args()
     seed = args.seed if args.seed is not None else DEFAULT_SEED[args.set]
     cases = build(args.set, seed, args.format)

@@ -161,7 +161,7 @@ class TestSetV3(unittest.TestCase):
             self.assertEqual(entry["file"], f"data/{set_name}-v3.jsonl")
             raw = open(os.path.join(HERE, entry["file"]), "rb").read()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
-        self.assertEqual(self.manifest["set_format"], "v4")
+        self.assertEqual(self.manifest["set_format"], "v5")
 
 
 if __name__ == "__main__":

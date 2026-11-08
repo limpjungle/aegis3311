@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Тесты активных промпта и набора v4 (переключение 08.11.2026), без сети. Запуск: python3 -B -m unittest -v test_set_v4"""
+"""Тесты набора и промпта v4 (активны 08.11.2026, с переходом на v5 — архив в sets_history), без сети. Запуск: python3 -B -m unittest -v test_set_v4"""
 import contextlib
 import hashlib
 import io
@@ -28,6 +28,7 @@ def rb(path):
 
 MANIFEST = json.loads(rb(os.path.join(HERE, "data", "manifest.json")))
 V3 = next(h for h in MANIFEST["sets_history"] if h.get("set_format") == "v3")
+V4 = next(h for h in MANIFEST["sets_history"] if h.get("set_format") == "v4")
 PROFILES = ("inceptron-fp8", "wafer-nvfp4")
 NEW_VARIANTS = {v for _, v, _, _ in generate.COMPOSITION_V4_EXTRA["probe"]}
 NO_VERDICT = {"prev_run_degradation_no_current", "prev_run_success_current_degrading", "analysis_running"}
@@ -63,7 +64,7 @@ class SetV4Test(unittest.TestCase):
 
     def test_files_match_generator_and_manifest(self):
         for name, cases in (("probe", self.probe), ("dev", self.dev)):
-            entry = MANIFEST["sets"][name]
+            entry = V4["sets"][name]
             raw = rb(os.path.join(HERE, entry["file"]))
             self.assertEqual(raw, selftest.dump(cases), f"{entry['file']} differs from generator output")
             self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
@@ -71,18 +72,9 @@ class SetV4Test(unittest.TestCase):
             self.assertEqual(entry["seed"], generate.DEFAULT_SEED[name])
             self.assertEqual(entry["seed"], V3["sets"][name]["seed"])
 
-    def test_active_is_v4(self):
-        self.assertNotEqual(MANIFEST.get("staged", {}).get("set_format"), "v4")  # v4 уже не кандидат (в staged может лежать v5)
-        self.assertEqual((MANIFEST["set_format"], MANIFEST["generator_version"], MANIFEST["answer_format"]), ("v4", "4.0.0", "v2"))
-        self.assertEqual(MANIFEST["prompt"]["file"], "prompt/system-v4.md")
-        self.assertEqual(MANIFEST["prompt"]["sha256"], sha("prompt/system-v4.md"))
-        self.assertEqual(MANIFEST["answer_schema"]["sha256"], sha("schema/answer.schema-v2.json"))
-        self.assertEqual(MANIFEST["sets"]["probe"]["file"], "data/probe-v4.jsonl")
-        self.assertEqual(MANIFEST["sets"]["dev"]["file"], "data/dev-v4.jsonl")
-
     def test_v3_archived(self):
         self.assertEqual((V3["until"], V3["answer_format"], V3["generator_version"]), ("2026-11-08", "v2", "3.0.0"))
-        p3 = MANIFEST["prompt_history"][-1]
+        p3 = next(p for p in MANIFEST["prompt_history"] if p["file"] == "prompt/system-v3.md")
         self.assertEqual((p3["file"], p3["until"]), ("prompt/system-v3.md", "2026-11-08"))
         self.assertEqual(p3["sha256"], sha("prompt/system-v3.md"))
         for name in ("probe", "dev"):
@@ -167,35 +159,11 @@ class SetV4Test(unittest.TestCase):
                     gaps += m["values"].count(None)
                 self.assertGreaterEqual(gaps, 4)
 
-    def test_default_format_is_v4(self):
-        with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "dev.jsonl")
-            subprocess.run([sys.executable, "-B", os.path.join(HERE, "generate.py"), "--set", "dev", "--out", out],
-                           check=True, capture_output=True)
-            self.assertEqual(rb(out), rb(os.path.join(HERE, MANIFEST["sets"]["dev"]["file"])))
-
-
 class RunnerV4Test(unittest.TestCase):
     def dry(self, profile, *extra):
         out, err = io.StringIO(), io.StringIO()
         code = run.run(["--profile", profile, "--set", "probe", "--dry-run", *extra], env={}, stdout=out, stderr=err)
         return code, out.getvalue(), err.getvalue()
-
-    def emitted(self, profile):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "r.jsonl")
-            code, _, err = self.dry(profile, "--emit-requests", path)  # без ключа и сети
-            self.assertEqual(code, 0, err)
-            return {r["id"]: r for r in map(json.loads, rb(path).decode().splitlines())}
-
-    def test_requests_match_v4_references(self):
-        for p in PROFILES:
-            got, ref = self.emitted(p), refs_of(p, "v4")
-            self.assertEqual(set(got), set(ref))
-            for i, r in got.items():
-                self.assertEqual((r["request_sha256"], r["est_input_tokens"]),
-                                 (ref[i]["request_sha256"], ref[i]["est_input_tokens"]),
-                                 f"{p} {i}: запрос не совпал с эталоном probe-v4; смена профиля, промпта или схемы требует новых эталонов")
 
     def test_emit_requests_needs_dry_run(self):
         out, err = io.StringIO(), io.StringIO()
@@ -206,33 +174,6 @@ class RunnerV4Test(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertFalse(os.path.exists(path))
 
-    def test_active_takes_v4_prompt_and_set(self):
-        act = run.check_integrity("probe", False)
-        self.assertEqual(act["prompt"], rb(os.path.join(HERE, "prompt/system-v4.md")).decode())
-        self.assertEqual(act["set_file"], "data/probe-v4.jsonl")
-        self.assertEqual(len(act["cases"]), 595)
-
-    def test_staged_without_candidate_is_refused(self):
-        # временная база: manifest без блока staged (в репозитории там лежит кандидат v5)
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "data"))
-            man = {k: v for k, v in MANIFEST.items() if k != "staged"}
-            with open(os.path.join(d, "data", "manifest.json"), "w") as f:
-                json.dump(man, f)
-            with open(os.path.join(d, "profiles.json"), "wb") as f:
-                f.write(rb(os.path.join(HERE, "profiles.json")))
-            with self.assertRaisesRegex(run.IntegrityError, "no staged candidate"):
-                run.check_integrity("probe", False, base=d, staged=True)
-            out, err = io.StringIO(), io.StringIO()
-            code = run.run(["--profile", PROFILES[0], "--set", "probe", "--staged", "--dry-run"], env={},
-                           stdout=out, stderr=err, base_dir=d)
-            self.assertEqual(code, 2, err.getvalue())
-
-    def test_v4_requests_differ_from_v3_references(self):
-        got, r3 = self.emitted(PROFILES[0]), refs_of(PROFILES[0], "v3")
-        self.assertEqual((len(got), len(r3)), (595, 480))
-        self.assertTrue(all(got[i]["request_sha256"] != r3[i]["request_sha256"] for i in r3), "промпт v4 должен менять каждый запрос")
-
     def test_request_digest_is_live_path(self):
         body = {"a": 1}
         self.assertEqual(run.request_digest(body), hashlib.sha256(run.body_bytes(body)).hexdigest())
@@ -242,23 +183,19 @@ class RunnerV4Test(unittest.TestCase):
             ref_dir = os.path.join(d, "refs", PROFILES[0])
             os.makedirs(ref_dir)
             meta = {"kind": "reference", "status": "completed", "finished_at": "2026-11-10T00:00:00Z",
-                    "hashes": {"set": MANIFEST["sets"]["probe"]["sha256"], "prompt": MANIFEST["prompt"]["sha256"]}}
+                    "hashes": {"set": V4["sets"]["probe"]["sha256"]}}
             with open(os.path.join(ref_dir, "probe-v4-x.jsonl.meta.json"), "w") as f:
                 json.dump(meta, f)
             with self.assertRaises(calibrate.NoReference):
                 calibrate.find_reference(d, PROFILES[0], V3["sets"]["probe"]["sha256"])
-            ref, _ = calibrate.find_reference(d, PROFILES[0], MANIFEST["sets"]["probe"]["sha256"])
+            ref, _ = calibrate.find_reference(d, PROFILES[0], V4["sets"]["probe"]["sha256"])
             self.assertTrue(ref.endswith("probe-v4-x.jsonl"))
-        # в репозитории: по хешу активного набора находится эталон v4, по хешу архивного v3 — эталон v3;
-        # калибровка v4 пишется в отдельное состояние и начинается с нуля (golden-set.md §15.5)
+        # в репозитории: по хешу архивного v4 — эталон v4, по хешу архивного v3 — эталон v3
         for p in PROFILES:
-            ref, _ = calibrate.find_reference(HERE, p, MANIFEST["sets"]["probe"]["sha256"])
+            ref, _ = calibrate.find_reference(HERE, p, V4["sets"]["probe"]["sha256"])
             self.assertIn(os.sep + "probe-v4-", ref)
             ref, _ = calibrate.find_reference(HERE, p, V3["sets"]["probe"]["sha256"])
             self.assertIn(os.sep + "probe-v3-", ref)
-            self.assertEqual(calibrate.state_path(HERE, p, calibrate.set_tag(MANIFEST["sets"]["probe"])),
-                             os.path.join(HERE, "calibration", f"{p}-probe-v4.json"))
-            self.assertFalse(os.path.exists(os.path.join(HERE, "calibration", f"{p}-probe-v4.json")))
 
 
 class ScoreV4Test(unittest.TestCase):

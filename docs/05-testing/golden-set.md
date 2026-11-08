@@ -19,7 +19,7 @@
 
 ## 2. Состав
 
-Набор `probe` v3 — **480 кейсов**. Этого достаточно, чтобы граница 3σ ежедневной пробы была ≈ 5 п. п. (§6.3 архитектуры). С 08.11.2026 активен набор v4 — надмножество v3: probe-v4 = 595, dev-v4 = 138 (§15.2); таблицы ниже — состав v3, входящий в v4 целиком.
+Набор `probe` v3 — **480 кейсов**. Этого достаточно, чтобы граница 3σ ежедневной пробы была ≈ 5 п. п. (§6.3 архитектуры). С 08.11.2026 активен набор v5 — надмножество v4 и v3: probe-v5 = 635, dev-v5 = 147 (§16.4; до него — v4, 595 / 138, §15.2); таблицы ниже — состав v3, входящий в v5 целиком.
 
 | Класс | Варианты | Кейсов |
 |---|---|---|
@@ -356,9 +356,9 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 - **Калибровка v4 — с нуля** в `calibration/<profile>-probe-v4.json`; эталоны — probe-v4 из §15.6. Первая точка — первый ежедневный прогон после попадания коммита в `main`. Freeze — не раньше 20 точек, ориентировочно ≈ 28–30.11.2026; старт shadow сдвигается на 2–3 дня.
 - Тесты: `TestProbeV4Reproducible`, `TestProbeV4ReproducibleRealMasker`, `TestProbeV4ReplayHTTP`, `TestProbeV4MetaMatchesAssets` по эталонам v4 вместо фикстуры запросов; `TestRouteOffAndBudget` считает лимит суток от размера запроса, а не числом под промпт v3.
 
-## 16. Промпт v5 и набор v5 (кандидат, 08.11.2026)
+## 16. Промпт v5 и набор v5 (активны с 08.11.2026)
 
-**Статус:** кандидат в блоке `staged` манифеста (`status: candidate`); активны промпт и набор v4 (§15.8). v5 закрывает два вопроса §15.7: Argo `Error` больше не выглядит как `degradation`, а откат без анализа текущей ревизии не зависит от одного промпта. Меняются три вещи сразу: intake (вердикт), PEP (cap) и промпт с набором (модель должна уметь читать новый вердикт). Нового root cause и новой схемы ответа нет.
+**Статус:** активны с 08.11.2026 (§16.8); до записи эталонов были кандидатом в блоке `staged`. Промпт и наборы v4 — в `prompt_history` / `sets_history`. v5 закрывает два вопроса §15.7: Argo `Error` больше не выглядит как `degradation`, а откат без анализа текущей ревизии не зависит от одного промпта. Меняются три вещи сразу: intake (вердикт), PEP (cap) и промпт с набором (модель должна уметь читать новый вердикт). Нового root cause и новой схемы ответа нет.
 
 ### 16.1 Вердикт `error` в intake
 
@@ -408,16 +408,16 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 ### 16.5 Команды и проверки без сети
 
 ```bash
-python3 generate.py --set probe --format v5 --out data/probe-v5.jsonl
-python3 generate.py --set dev --format v5 --out data/dev-v5.jsonl
-python3 run.py --profile inceptron-fp8 --set dev --staged                        # платно (оператор)
-python3 run.py --profile inceptron-fp8 --set probe --staged --reference          # эталон кандидата (оператор)
-python3 run.py --profile inceptron-fp8 --set probe --staged --dry-run --emit-requests requests/inceptron-fp8/probe-v5.jsonl   # без ключа и сети
+python3 generate.py --set probe --out data/probe-v5.jsonl                 # v5 — формат по умолчанию с 08.11.2026
+python3 generate.py --set dev --out data/dev-v5.jsonl
+python3 run.py --profile inceptron-fp8 --set dev                             # платно (оператор)
+python3 run.py --profile inceptron-fp8 --set probe --reference               # эталон (оператор)
+python3 run.py --profile inceptron-fp8 --set probe --dry-run --emit-requests /tmp/r.jsonl   # без ключа и сети
 python3 score.py --cases data/probe-v5.jsonl --pred <прогон v5> --by-variant
 python3 score.py --cases data/probe-v5.jsonl --pred <прогон v5> --ref <эталон v4> --ref-ids-only
 ```
 
-Проверки без сети: `python3 -B -m unittest -v test_set_v5 test_set_v4`, `selftest.py`; Go — `TestProbeV5RequestsMatchRunner` и `TestIntakeReproducesRunnerRequestsV5` (запросы Go совпадают с `run.py --staged --dry-run` по `request_sha256` и `est_input_tokens`, фикстуры `requests/<profile>/probe-v5.jsonl`), `TestGoldenSetPEP` (откат без анализа понижается до L1 только там, где `computed.analysis_run` пуст: probe 10, dev 2, probe-staged 10, dev-staged 2), `TestRefAnswersNoPanic` (20 откатов эталонов v4 без анализа), `TestAssembleMatchesGolden` (покрытие `error` в Progressing и живом Bake), `TestAnalysisRunVerdicts`, `TestActiveAssetsHaveReferencesRejectsUnfrozen` (кандидат v5 нельзя сделать активным без эталонов).
+Проверки без сети: `python3 -B -m unittest -v test_set_v5 test_set_v4`, `selftest.py`; Go — `TestProbeV5Reproducible` / `TestProbeV5ReproducibleRealMasker` / `TestProbeV5MetaMatchesAssets` / `TestProbeV5ReplayHTTP` и `TestIntakeReproducesProbeRefs/v5` (запросы Go и intake совпадают с эталонами probe-v5 по `request_sha256` и `est_input_tokens`; до записи эталонов то же проверяли фикстуры `requests/<profile>/probe-v5.jsonl`, удалены при переключении), `TestGoldenSetPEP` (откат без анализа — L1 при пустом `computed.analysis_run`: probe 10, dev 2, probe-v4 10, dev-v4 2; при неподтверждающем вердикте — probe 10, dev 2), `TestRefAnswersNoPanic` (откатов без анализа в эталонах v4 и v5 — 40, при вердикте `error` в эталонах v5 — 20), `TestAssembleMatchesGolden` (покрытие `error` в Progressing и живом Bake), `TestAnalysisRunVerdicts`, `TestActiveAssetsHaveReferencesRejectsUnfrozen` (кандидат v5 нельзя сделать активным без эталонов).
 
 ### 16.6 Критерии переключения
 
@@ -455,8 +455,18 @@ Dev-v5 (147 кейсов): 100% по первопричине и допусти�
 
 Открытые вопросы:
 
-1. Intake отдаёт `error` уже сейчас, при активном промпте v4 (shadow L0). Промпт v4 про `error` не знает; это безопаснее прежнего ложного `degradation`, но поведение модели на новом значении не проверено до переключения.
+1. ~~Intake отдаёт `error` при активном промпте v4~~ — закрыто переключением на v5 (§16.8); до него откат по `error` страховал cap `analysis_verdict` (§16.2).
 2. ~~PEP не страхует откат при вердикте `error`~~ — закрыто cap `analysis_verdict` (§16.2). Остаётся: при `inconclusive` PEP не знает `service.insufficient_data_policy`, поэтому откат `insufficient_data_policy` при политике `hold`/`human` проходит PEP (защита — промпт); для закрытия нужна политика сервиса в `TargetState`.
 3. Семантику Argo `Error` при Progressing нужно проверить на живом кластере.
 4. threshold-форма Argo `Inconclusive` не покрыта набором.
 5. Проба дороже на 6,7%; калибровка v5 — с нуля при переключении (freeze сдвигается).
+
+### 16.8 Переключение на v5 (08.11.2026)
+
+Выполнено отдельным коммитом после утверждения отчёта §16.6:
+
+- `data/manifest.json`: набор, промпт и `generator_version` v5 — на верхнем уровне (`set_format: v5`), блока `staged` нет; наборы v4 — в `sets_history`, промпт v4 — в `prompt_history` (`until: 2026-11-08`). Схема ответа не менялась.
+- `generate.py`: `--format` по умолчанию `v5`. Фикстуры `requests/<profile>/probe-v5.jsonl` удалены: их роль выполняют эталоны (хеши совпали на всех 635 × 2 кейсах).
+- Роутер (`LoadAssets`) и intake берут промпт v5; intake и раньше отдавал вердикт `error` (§16.1), теперь модель его знает. Ежедневная проба идёт на probe-v5 (635 кейсов, ≈ $0,83 в сутки на оба endpoint'а).
+- **Калибровка v5 — с нуля** в `calibration/<profile>-probe-v5.json`; точки v4 (если ежедневный прогон успел их записать до переключения) остаются архивом в ветке `probe-results`. Freeze — не раньше 20 точек на v5, ориентировочно ≈ 28–30.11.2026.
+- Тесты: `TestProbeV5*` и `TestIntakeReproducesProbeRefs/v5` по эталонам v5; эталоны v3/v4 проверяются на закреплённых промптах; `TestActiveAssetsHaveReferencesRejectsUnfrozen` отвергает смешение промпта и набора разных версий.

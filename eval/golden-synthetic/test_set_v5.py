@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Тесты кандидата: промпт v5 и набор v5 (manifest.staged), без сети. Запуск: python3 -B -m unittest -v test_set_v5"""
+"""Тесты активных промпта и набора v5 (переключение 08.11.2026), без сети. Запуск: python3 -B -m unittest -v test_set_v5"""
 import contextlib
 import hashlib
 import io
@@ -26,15 +26,21 @@ def rb(path):
 
 
 MANIFEST = json.loads(rb(os.path.join(HERE, "data", "manifest.json")))
-STAGED = MANIFEST["staged"]
+V4 = next(h for h in MANIFEST["sets_history"] if h.get("set_format") == "v4")
 PROFILES = ("inceptron-fp8", "wafer-nvfp4")
 NEW_VARIANTS = {v for _, v, _, _ in generate.COMPOSITION_V5_EXTRA["probe"]}
 NO_ROLLBACK = {"analysis_error_no_impact", "analysis_error_current_degrading"}
-REGEN = "python3 run.py --profile <profile> --set probe --staged --dry-run --emit-requests requests/<profile>/probe-v5.jsonl"
 
 
 def sha(path):
     return hashlib.sha256(rb(os.path.join(HERE, path))).hexdigest()
+
+
+def refs_of(profile, version):
+    import glob
+    paths = glob.glob(os.path.join(HERE, "refs", profile, f"probe-{version}-*.jsonl"))
+    assert len(paths) == 1, paths
+    return {r["id"]: r for r in map(json.loads, rb(paths[0]).decode().splitlines())}
 
 
 def cases_of(set_name, fmt="v5"):
@@ -56,34 +62,35 @@ class SetV5Test(unittest.TestCase):
 
     def test_files_match_generator_and_manifest(self):
         for name, cases in (("probe", self.probe), ("dev", self.dev)):
-            entry = STAGED["sets"][name]
+            entry = MANIFEST["sets"][name]
             raw = rb(os.path.join(HERE, entry["file"]))
             self.assertEqual(raw, selftest.dump(cases), f"{entry['file']} differs from generator output")
             self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
             self.assertEqual(entry["cases"], len(cases))
             self.assertEqual(entry["seed"], generate.DEFAULT_SEED[name])
-            self.assertEqual(entry["seed"], MANIFEST["sets"][name]["seed"])
+            self.assertEqual(entry["seed"], V4["sets"][name]["seed"])
 
-    def test_staged_block(self):
-        self.assertEqual((STAGED["status"], STAGED["set_format"], STAGED["generator_version"], STAGED["answer_format"]),
-                         ("candidate", "v5", "5.0.0", "v2"))
-        self.assertEqual(STAGED["prompt"]["file"], "prompt/system-v5.md")
-        self.assertEqual(STAGED["prompt"]["sha256"], sha("prompt/system-v5.md"))
-        self.assertEqual(STAGED["answer_schema"]["file"], MANIFEST["answer_schema"]["file"])
-        self.assertEqual(STAGED["answer_schema"]["sha256"], MANIFEST["answer_schema"]["sha256"])
+    def test_active_is_v5(self):
+        self.assertNotIn("staged", MANIFEST)
+        self.assertEqual((MANIFEST["set_format"], MANIFEST["generator_version"], MANIFEST["answer_format"]), ("v5", "5.0.0", "v2"))
+        self.assertEqual(MANIFEST["prompt"]["file"], "prompt/system-v5.md")
+        self.assertEqual(MANIFEST["prompt"]["sha256"], sha("prompt/system-v5.md"))
+        self.assertEqual(MANIFEST["answer_schema"]["sha256"], sha("schema/answer.schema-v2.json"))
         for name, cases in (("probe", self.probe), ("dev", self.dev)):
             by_class, by_slice = {}, {}
             for c in cases:
                 by_class[c["expected"]["incident_class"]] = by_class.get(c["expected"]["incident_class"], 0) + 1
                 by_slice[c["slice"]] = by_slice.get(c["slice"], 0) + 1
-            self.assertEqual(STAGED["sets"][name]["by_class"], by_class)
-            self.assertEqual(STAGED["sets"][name]["by_slice"], by_slice)
+            self.assertEqual(MANIFEST["sets"][name]["by_class"], by_class)
+            self.assertEqual(MANIFEST["sets"][name]["by_slice"], by_slice)
 
-    def test_active_still_v4(self):
-        self.assertEqual((MANIFEST["set_format"], MANIFEST["generator_version"], MANIFEST["answer_format"]), ("v4", "4.0.0", "v2"))
-        self.assertEqual(MANIFEST["prompt"]["file"], "prompt/system-v4.md")
-        self.assertEqual(MANIFEST["sets"]["probe"]["file"], "data/probe-v4.jsonl")
-        self.assertEqual(MANIFEST["sets"]["dev"]["file"], "data/dev-v4.jsonl")
+    def test_v4_archived(self):
+        self.assertEqual((V4["until"], V4["answer_format"], V4["generator_version"]), ("2026-11-08", "v2", "4.0.0"))
+        p4 = next(p for p in MANIFEST["prompt_history"] if p["file"] == "prompt/system-v4.md")
+        self.assertEqual((p4["until"], p4["sha256"]), ("2026-11-08", sha("prompt/system-v4.md")))
+        for name in ("probe", "dev"):
+            self.assertEqual(V4["sets"][name]["file"], f"data/{name}-v4.jsonl")
+            self.assertEqual(V4["sets"][name]["sha256"], sha(V4["sets"][name]["file"]))
 
     def test_v4_cases_unchanged_in_v5(self):
         for name, v5 in (("probe", self.probe), ("dev", self.dev)):
@@ -97,7 +104,7 @@ class SetV5Test(unittest.TestCase):
                 self.assertEqual(c5["generator_version"], "5.0.0")
         # сохранённые файлы v4 и v3 не изменились после появления v5
         for name in ("probe", "dev"):
-            self.assertEqual(rb(os.path.join(HERE, MANIFEST["sets"][name]["file"])), selftest.dump(cases_of(name, "v4")))
+            self.assertEqual(rb(os.path.join(HERE, V4["sets"][name]["file"])), selftest.dump(cases_of(name, "v4")))
             v3 = next(h for h in MANIFEST["sets_history"] if h.get("set_format") == "v3")
             self.assertEqual(rb(os.path.join(HERE, v3["sets"][name]["file"])), selftest.dump(cases_of(name, "v3")))
 
@@ -157,7 +164,7 @@ class SetV5Test(unittest.TestCase):
         pols = {c["input"]["service"]["insufficient_data_policy"] for c in self.probe if c["variant"] == "analysis_error_no_impact"}
         self.assertIn("rollback", pols)
 
-    def test_default_format_is_still_v4(self):
+    def test_default_format_is_v5(self):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "dev.jsonl")
             subprocess.run([sys.executable, "-B", os.path.join(HERE, "generate.py"), "--set", "dev", "--out", out],
@@ -176,31 +183,45 @@ class RunnerV5Test(unittest.TestCase):
             path = os.path.join(d, "r.jsonl")
             code, _, err = self.dry(profile, "--emit-requests", path, *extra)  # без ключа и сети
             self.assertEqual(code, 0, err)
-            return rb(path)
+            return {r["id"]: r for r in map(json.loads, rb(path).decode().splitlines())}
 
-    def test_request_fixtures_match_runner(self):
+    def test_requests_match_v5_references(self):
         for p in PROFILES:
-            fixture = rb(os.path.join(HERE, "requests", p, "probe-v5.jsonl"))
-            self.assertEqual(self.emit(p, "--staged"), fixture,
-                             f"{p}: фикстура запросов устарела; пересоздать: {REGEN}")
+            got, ref = self.emit(p), refs_of(p, "v5")
+            self.assertEqual(set(got), set(ref))
+            for i, r in got.items():
+                self.assertEqual((r["request_sha256"], r["est_input_tokens"]),
+                                 (ref[i]["request_sha256"], ref[i]["est_input_tokens"]),
+                                 f"{p} {i}: запрос не совпал с эталоном probe-v5; смена профиля, промпта или схемы требует новых эталонов")
 
-    def test_staged_takes_v5_prompt_and_set(self):
-        st = run.check_integrity("probe", False, staged=True)
-        self.assertEqual(st["prompt"], rb(os.path.join(HERE, "prompt/system-v5.md")).decode())
-        self.assertEqual(st["set_file"], "data/probe-v5.jsonl")
-        self.assertEqual(len(st["cases"]), 635)
+    def test_active_takes_v5_prompt_and_set(self):
+        act = run.check_integrity("probe", False)
+        self.assertEqual(act["prompt"], rb(os.path.join(HERE, "prompt/system-v5.md")).decode())
+        self.assertEqual(act["set_file"], "data/probe-v5.jsonl")
+        self.assertEqual(len(act["cases"]), 635)
 
-    def test_staged_differs_from_active_requests(self):
-        act = {r["id"]: r for r in map(json.loads, self.emit(PROFILES[0]).decode().splitlines())}
-        stg = {r["id"]: r for r in map(json.loads, self.emit(PROFILES[0], "--staged").decode().splitlines())}
-        self.assertEqual((len(act), len(stg)), (595, 635))
-        for i, r in act.items():
-            self.assertNotEqual(stg[i]["request_sha256"], r["request_sha256"], f"{i}: промпт v5 должен менять каждый запрос")
+    def test_staged_without_candidate_is_refused(self):
+        with self.assertRaisesRegex(run.IntegrityError, "no staged candidate"):
+            run.check_integrity("probe", False, staged=True)
+        code, _, err = self.dry(PROFILES[0], "--staged")
+        self.assertEqual(code, 2, err)
 
-    def test_calibration_does_not_see_v5_references(self):
+    def test_v5_requests_differ_from_v4_references(self):
+        got, r4 = self.emit(PROFILES[0]), refs_of(PROFILES[0], "v4")
+        self.assertEqual((len(got), len(r4)), (635, 595))
+        for i, r in r4.items():
+            self.assertNotEqual(got[i]["request_sha256"], r["request_sha256"], f"{i}: промпт v5 должен менять каждый запрос")
+
+    def test_calibration_finds_reference_by_set(self):
+        # по хешу активного набора — эталон v5, по хешу архивного v4 — эталон v4; калибровка v5 — с нуля в своём состоянии
         for p in PROFILES:
-            with self.assertRaises(calibrate.NoReference):
-                calibrate.find_reference(HERE, p, STAGED["sets"]["probe"]["sha256"])
+            ref, _ = calibrate.find_reference(HERE, p, MANIFEST["sets"]["probe"]["sha256"])
+            self.assertIn(os.sep + "probe-v5-", ref)
+            ref, _ = calibrate.find_reference(HERE, p, V4["sets"]["probe"]["sha256"])
+            self.assertIn(os.sep + "probe-v4-", ref)
+            self.assertEqual(calibrate.state_path(HERE, p, calibrate.set_tag(MANIFEST["sets"]["probe"])),
+                             os.path.join(HERE, "calibration", f"{p}-probe-v5.json"))
+            self.assertFalse(os.path.exists(os.path.join(HERE, "calibration", f"{p}-probe-v5.json")))
 
 
 class ScoreV5Test(unittest.TestCase):

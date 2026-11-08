@@ -104,7 +104,8 @@ type acceptable struct {
 }
 
 // loadGolden читает набор только на чтение, сверив sha256 с manifest.json.
-// Имя вида "probe-staged" — кандидат из manifest.staged (набор v5), иначе активный набор.
+// Имя вида "probe-staged" — кандидат из manifest.staged, "probe-v4" — архивный набор этой версии из
+// manifest.sets_history, иначе активный набор (v5 с 08.11.2026).
 func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 	t.Helper()
 	mb, err := os.ReadFile(filepath.Join(goldenDir, "data/manifest.json"))
@@ -124,6 +125,14 @@ func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 				Cases  int    `json:"cases"`
 			} `json:"sets"`
 		} `json:"staged"`
+		History []struct {
+			SetFormat string `json:"set_format"`
+			Sets      map[string]struct {
+				File   string `json:"file"`
+				Sha256 string `json:"sha256"`
+				Cases  int    `json:"cases"`
+			} `json:"sets"`
+		} `json:"sets_history"`
 	}
 	if err := json.Unmarshal(mb, &m); err != nil {
 		t.Fatal(err)
@@ -131,6 +140,13 @@ func loadGolden(t *testing.T, set string, wantCases int) []goldenCase {
 	ms := m.Sets[set]
 	if n, ok := strings.CutSuffix(set, "-staged"); ok {
 		ms = m.Staged.Sets[n]
+	}
+	if i := strings.LastIndex(set, "-v"); i > 0 {
+		for _, h := range m.History {
+			if h.SetFormat == set[i+1:] {
+				ms = h.Sets[set[:i]]
+			}
+		}
 	}
 	path := filepath.Join(goldenDir, ms.File)
 	data, err := os.ReadFile(path)
@@ -269,7 +285,7 @@ func TestGoldenSetPEP(t *testing.T) {
 		cases   int
 		missing int // откатов без анализа среди acceptable
 		verdict int // допустимых откатов, где вердикт анализа не подтверждает причину (crashloop при error)
-	}{{"probe", 595, 10, 0}, {"dev", 138, 2, 0}, {"probe-staged", 635, 10, 10}, {"dev-staged", 147, 2, 2}} {
+	}{{"probe", 635, 10, 10}, {"dev", 147, 2, 2}, {"probe-v4", 595, 10, 0}, {"dev-v4", 138, 2, 0}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad, checked, unavailable, missing, verdict, capped := 0, 0, 0, 0, 0, 0
 			fail := func(format string, a ...any) {
@@ -372,12 +388,12 @@ func TestGoldenSetPEP(t *testing.T) {
 func TestRefAnswersNoPanic(t *testing.T) {
 	eng := newEngine(t)
 	cases := map[string]goldenCase{}
-	for _, c := range loadGolden(t, "probe", 595) {
+	for _, c := range loadGolden(t, "probe", 635) {
 		cases[c.ID] = c
 	}
-	// эталоны v2, v3 (архив) и v4 прогоняются на состояниях активного набора по id (v4 — надмножество v2 и v3)
+	// эталоны v2, v3, v4 (архив) и v5 прогоняются на состояниях активного набора по id (v5 — надмножество всех)
 	var files []string
-	for _, ver := range []string{"v2", "v3", "v4"} {
+	for _, ver := range []string{"v2", "v3", "v4", "v5"} {
 		fs, _ := filepath.Glob(filepath.Join(goldenDir, "refs/*/probe-"+ver+"-*.jsonl"))
 		t.Logf("эталонов %s: %d", ver, len(fs))
 		files = append(files, fs...)
@@ -433,9 +449,13 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	if total == 0 {
 		t.Error("не разобрано ни одного ответа")
 	}
-	// 10 откатов crashloop_no_current_analysis у каждого из двух профилей эталонов v4
-	if missing != 20 {
-		t.Errorf("откатов без анализа в ответах %d, ожидалось 20", missing)
+	// crashloop_no_current_analysis: 10 откатов у каждого из двух профилей в эталонах v4 и v5;
+	// crashloop_analysis_error (вердикт error): 10 откатов у каждого профиля в эталонах v5
+	if missing != 40 {
+		t.Errorf("откатов без анализа в ответах %d, ожидалось 40", missing)
+	}
+	if verdict != 20 {
+		t.Errorf("откатов при неподтверждающем вердикте в ответах %d, ожидалось 20", verdict)
 	}
 	t.Logf("ответов проверено: %d, откатов без анализа: %d, при неподтверждающем вердикте: %d", total, missing, verdict)
 }

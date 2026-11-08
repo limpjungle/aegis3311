@@ -33,7 +33,7 @@ func TestLoadAssets(t *testing.T) {
 
 func mapFS(t *testing.T, mut func(m fstest.MapFS)) fstest.MapFS {
 	m := fstest.MapFS{}
-	for _, n := range []string{"profiles.json", "data/manifest.json", "prompt/system-v3.md", "prompt/system-v4.md", "schema/answer.schema-v2.json"} {
+	for _, n := range []string{"profiles.json", "data/manifest.json", "prompt/system-v3.md", "prompt/system-v4.md", "prompt/system-v5.md", "schema/answer.schema-v2.json"} {
 		b, err := goldensynthetic.FS.ReadFile(n)
 		if err != nil {
 			t.Fatal(err)
@@ -47,8 +47,8 @@ func mapFS(t *testing.T, mut func(m fstest.MapFS)) fstest.MapFS {
 func TestLoadAssetsRejects(t *testing.T) {
 	prof := func(m fstest.MapFS) string { return string(m["profiles.json"].Data) }
 	cases := map[string]func(m fstest.MapFS){
-		"подмена промпта":       func(m fstest.MapFS) { m["prompt/system-v4.md"].Data = append(m["prompt/system-v4.md"].Data, ' ') },
-		"нет активного промпта": func(m fstest.MapFS) { delete(m, "prompt/system-v4.md") },
+		"подмена промпта":       func(m fstest.MapFS) { m["prompt/system-v5.md"].Data = append(m["prompt/system-v5.md"].Data, ' ') },
+		"нет активного промпта": func(m fstest.MapFS) { delete(m, "prompt/system-v5.md") },
 		"подмена схемы": func(m fstest.MapFS) {
 			m["schema/answer.schema-v2.json"].Data = append(m["schema/answer.schema-v2.json"].Data, ' ')
 		},
@@ -64,7 +64,7 @@ func TestLoadAssetsRejects(t *testing.T) {
 			m["data/manifest.json"].Data = []byte(d[:i] + `"answer_format": "v1"` + d[i+len(`"answer_format": "v2"`):])
 		},
 		"путь с ..": func(m fstest.MapFS) {
-			m["data/manifest.json"].Data = []byte(strings.Replace(string(m["data/manifest.json"].Data), `"prompt/system-v4.md"`, `"../x.md"`, 1))
+			m["data/manifest.json"].Data = []byte(strings.Replace(string(m["data/manifest.json"].Data), `"prompt/system-v5.md"`, `"../x.md"`, 1))
 		},
 		"zdr false": func(m fstest.MapFS) {
 			m["profiles.json"].Data = []byte(strings.Replace(prof(m), `"zdr": true`, `"zdr": false`, 1))
@@ -164,8 +164,12 @@ func TestLoadAssetsPinned(t *testing.T) {
 	if a3.ConfigSHA256 != a4.ConfigSHA256 || a4.Primary == nil || a4.Fallback == nil {
 		t.Fatal("конфигурация pinned отличается от активной")
 	}
-	// Активные ассеты — v4 (переключение 08.11.2026), v3 доступен из prompt_history.
-	if a := loadReal(t); a.PromptFile != v4 || a.SystemSHA256 != a4.SystemSHA256 {
+	// Активные ассеты — v5 (переключение 08.11.2026), v3 и v4 доступны из prompt_history.
+	a5, err := LoadAssetsPinned(mapFS(t, func(fstest.MapFS) {}), "prompt/system-v5.md", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := loadReal(t); a.PromptFile != "prompt/system-v5.md" || a.SystemSHA256 != a5.SystemSHA256 || a5.SystemSHA256 == a4.SystemSHA256 {
 		t.Fatalf("LoadAssets: активный промпт %s", a.PromptFile)
 	}
 	// Промпты из prompt_history тоже доступны.

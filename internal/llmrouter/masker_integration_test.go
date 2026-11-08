@@ -27,6 +27,7 @@ func realMasker(t testing.TB) *masker.Masker {
 // Эталоны проб воспроизводятся побайтно и с реальным маскировщиком: на «чистых» данных он ничего не меняет.
 func TestProbeV3ReproducibleRealMasker(t *testing.T) { testProbeReproducibleRealMasker(t, probeV3) }
 func TestProbeV4ReproducibleRealMasker(t *testing.T) { testProbeReproducibleRealMasker(t, probeV4) }
+func TestProbeV5ReproducibleRealMasker(t *testing.T) { testProbeReproducibleRealMasker(t, probeV5) }
 
 func testProbeReproducibleRealMasker(t *testing.T, v probeVersion) {
 	cases := v.load(t)

@@ -139,3 +139,60 @@ func TestCheckAPIURL(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAssetsPinned(t *testing.T) {
+	const v3, v4, schema = "prompt/system-v3.md", "prompt/system-v4.md", "schema/answer.schema-v2.json"
+	withV4 := func(m fstest.MapFS) {
+		b, err := goldensynthetic.FS.ReadFile(v4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m[v4] = &fstest.MapFile{Data: b}
+	}
+	a3, err := LoadAssetsPinned(mapFS(t, withV4), v3, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a4, err := LoadAssetsPinned(mapFS(t, withV4), v4, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a3.PromptFile != v3 || a4.PromptFile != v4 || a3.SystemSHA256 == a4.SystemSHA256 || a3.SchemaSHA256 != a4.SchemaSHA256 {
+		t.Fatalf("pinned: %s %.12s / %s %.12s", a3.PromptFile, a3.SystemSHA256, a4.PromptFile, a4.SystemSHA256)
+	}
+	if a3.ConfigSHA256 != a4.ConfigSHA256 || a4.Primary == nil || a4.Fallback == nil {
+		t.Fatal("конфигурация pinned отличается от активной")
+	}
+	// Активные ассеты остаются v3.
+	if a := loadReal(t); a.PromptFile != v3 || a.SystemSHA256 != a3.SystemSHA256 {
+		t.Fatalf("LoadAssets: активный промпт %s", a.PromptFile)
+	}
+	// Промпты из prompt_history тоже доступны.
+	if _, err := LoadAssetsPinned(mapFS(t, func(m fstest.MapFS) {
+		b, _ := goldensynthetic.FS.ReadFile("prompt/system-v2.md")
+		m["prompt/system-v2.md"] = &fstest.MapFile{Data: b}
+	}), "prompt/system-v2.md", schema); err != nil {
+		t.Errorf("prompt_history: %v", err)
+	}
+	rejects := map[string]struct {
+		prompt, schema string
+		mut            func(m fstest.MapFS)
+	}{
+		"файла нет в manifest":  {"prompt/system-v9.md", schema, func(m fstest.MapFS) { m["prompt/system-v9.md"] = &fstest.MapFile{Data: []byte("x")} }},
+		"схемы нет в manifest":  {v3, "schema/other.json", func(m fstest.MapFS) { m["schema/other.json"] = &fstest.MapFile{Data: []byte("{}")} }},
+		"sha не совпадает":      {v4, schema, func(m fstest.MapFS) { withV4(m); m[v4].Data = append(m[v4].Data, ' ') }},
+		"файл есть, но не в fs": {v4, schema, func(fstest.MapFS) {}},
+		"путь с ..":             {"../x.md", schema, func(fstest.MapFS) {}},
+	}
+	for name, c := range rejects {
+		if _, err := LoadAssetsPinned(mapFS(t, c.mut), c.prompt, c.schema); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+	}
+	// manifest с подменённым путём записи на "../": запись есть, путь недопустим.
+	if _, err := LoadAssetsPinned(mapFS(t, func(m fstest.MapFS) {
+		m["data/manifest.json"].Data = []byte(strings.Replace(string(m["data/manifest.json"].Data), `"prompt/system-v4.md"`, `"../x.md"`, 1))
+	}), "../x.md", schema); err == nil {
+		t.Error("путь с .. из manifest: принято")
+	}
+}

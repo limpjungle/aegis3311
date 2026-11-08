@@ -19,6 +19,10 @@
 | `prompt/system-v1.md` | Предыдущая версия промпта, хранится для истории (`prompt_history` в manifest) |
 | `data/probe-v3.jsonl` | Набор для ежедневной пробы и eval endpoint'ов, набор v3 (формат ответа v2 + `input.service.pods`; 480 кейсов, активный с 07.11.2026) |
 | `data/dev-v3.jsonl` | Отдельный набор для отладки промптов, набор v3 (113 кейсов, другой seed) |
+| `prompt/system-v4.md` | Кандидат промпта v4 (`staged` в manifest, не активен; golden-set.md §15) |
+| `data/probe-v4.jsonl`, `data/dev-v4.jsonl` | Кандидат набора v4, надмножество v3 (595 / 138 кейсов; `staged` в manifest, не активен) |
+| `requests/<profile>/probe-v4.jsonl` | Фикстура: `request_sha256` и `est_input_tokens` каждого кейса probe-v4 из `run.py --staged --dry-run --emit-requests`; с ней Go-тесты сверяют запросы без сети |
+| `test_set_v4.py` | Тесты кандидата v4 (детерминизм, хеши, v3 внутри v4, инварианты, разметка, фикстуры, `--staged`, `score.py`) |
 | `data/probe-v2.jsonl`, `data/dev-v2.jsonl` | Наборы v2 (без списка подов во входе), хранятся для истории (`sets_history` в manifest) |
 | `data/probe-v1.jsonl`, `data/dev-v1.jsonl` | Те же кейсы в формате v1 (величину выбирала модель), хранятся для истории |
 | `test_format_v2.py` | Тесты формата v2, правил шага и метрики `decision_agreement` |
@@ -34,6 +38,9 @@ python3 generate.py --set probe --out data/probe-v3.jsonl  # пересозда�
 python3 generate.py --set probe --format v2 --out /tmp/p2.jsonl  # воспроизвести набор v2 байт в байт
 python3 generate.py --set probe --format v1 --out /tmp/p1.jsonl  # воспроизвести набор v1 байт в байт
 python3 score.py --cases data/probe-v3.jsonl --pred predictions.jsonl --ref reference.jsonl --out report.json  # decision_agreement — основная метрика пробы
+python3 generate.py --set probe --format v4 --out data/probe-v4.jsonl  # кандидат v4 (хеш — manifest.staged)
+python3 score.py --cases data/probe-v4.jsonl --pred <прогон v4> --by-variant              # дополнительно по variant
+python3 score.py --cases data/probe-v4.jsonl --pred <прогон v4> --ref <эталон v3> --ref-ids-only  # только кейсы v3, id которых есть в эталоне
 ```
 
 ## Запуск раннера
@@ -41,13 +48,14 @@ python3 score.py --cases data/probe-v3.jsonl --pred predictions.jsonl --ref refe
 ```bash
 python3 run.py --profile inceptron-fp8 --set probe --dry-run          # без сети и ключа: тело запроса, оценка токенов и стоимости
 export OPENROUTER_API_KEY=...                                              # только через окружение (или OPENROUTER_API_KEY_FILE)
+python3 run.py --profile inceptron-fp8 --staged --set probe --dry-run --emit-requests requests/inceptron-fp8/probe-v4.jsonl  # кандидат v4: набор, промпт и схема из manifest.staged; --emit-requests только с --dry-run
 python3 run.py --profile inceptron-fp8 --set dev --limit 10           # небольшой пробный прогон
 python3 run.py --profile inceptron-fp8 --set probe                    # -> runs/<profile>/probe-<run_id>.jsonl (+ .meta.json)
 python3 run.py --profile inceptron-fp8 --set probe --resume runs/inceptron-fp8/probe-<run_id>.jsonl
 python3 run.py --profile inceptron-fp8 --set probe --reference        # эталон -> refs/<profile>/probe-v3-<дата>-<run_id>.jsonl (версия — из файла набора), 0444
 python3 -B calibrate.py update --profile inceptron-fp8                    # точка калибровки по новым прогонам probe
 python3 -B calibrate.py freeze --profile inceptron-fp8                    # заморозить базу (≥ 20 точек, по утверждению)
-python3 -B -m unittest -v test_format_v2 test_calibrate test_run test_run_audit test_run_fixes  # все тесты (без сети)
+python3 -B -m unittest -v test_format_v2 test_calibrate test_run test_run_audit test_run_fixes test_set_v4  # все тесты (без сети)
 ```
 
 Коды выхода: 0 — все кейсы получили окончательный ответ; 2 — отказ (конфиг, целостность, безопасность, нет ключа, файл существует);

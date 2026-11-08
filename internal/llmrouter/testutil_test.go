@@ -132,6 +132,16 @@ func loadAssets(t testing.TB) *openrouter.Assets {
 	return a
 }
 
+// loadAssetsPinned — ассеты с заданными промптом и схемой (v3 после переключения на v4 остаётся воспроизводимым).
+func loadAssetsPinned(t testing.TB, prompt, schema string) *openrouter.Assets {
+	t.Helper()
+	a, err := openrouter.LoadAssetsPinned(goldensynthetic.FS, prompt, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 // testKey пишет ключ во временный файл и читает его через LoadAPIKey (как в эксплуатации).
 // runtimeSecret — маркер секрета, генерируемый в рантайме (в исходниках нет токеноподобных литералов).
 func runtimeSecret(t testing.TB) string {
@@ -171,7 +181,11 @@ type rig struct {
 
 func newRig(t testing.TB, m dataclass.Masker, tr openrouter.Transport, url string, sink EventSink) *rig {
 	t.Helper()
-	a := loadAssets(t)
+	return newRigAssets(t, loadAssets(t), m, tr, url, sink)
+}
+
+func newRigAssets(t testing.TB, a *openrouter.Assets, m dataclass.Masker, tr openrouter.Transport, url string, sink EventSink) *rig {
+	t.Helper()
 	opts := []openrouter.ClientOption{openrouter.WithSleep(func(context.Context, time.Duration) error { return nil })}
 	if url != "" {
 		opts = append(opts, openrouter.WithURL(url))

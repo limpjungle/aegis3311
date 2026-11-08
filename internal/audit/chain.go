@@ -130,6 +130,8 @@ type VerifyOptions struct {
 	Checkpoints []Checkpoint
 	// OnRouterEvent — если не nil, вызывается для каждого события роутера после проверки уникальности event_id.
 	OnRouterEvent func(seq uint64, ev *RouterEvent)
+	// OnRecord — если не nil, вызывается для каждого decision record'а после проверки уникальности record_id.
+	OnRecord func(seq uint64, rec *DecisionRecord)
 }
 
 // VerifyStats — число проверенных записей цепочки по типам.
@@ -211,6 +213,7 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 		_ = json.Unmarshal(e.Record, &peek) // дубли ключей и неизвестные поля ловит strictjson.Decode ниже
 		var id, idName string
 		var routerEv *RouterEvent
+		var decRec *DecisionRecord
 		switch peek.Schema {
 		case RecordSchema:
 			var rec DecisionRecord
@@ -221,6 +224,7 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 				return fail("decision record: %v", err)
 			}
 			id, idName = rec.RecordID, "record_id"
+			decRec = &rec
 			stats.Records++
 		case RouterEventSchema:
 			var ev RouterEvent
@@ -240,6 +244,9 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 			return fail("%s %s уже был в seq %d", idName, id, prev)
 		}
 		ids[id] = e.Seq
+		if decRec != nil && opts.OnRecord != nil {
+			opts.OnRecord(e.Seq, decRec)
+		}
 		if routerEv != nil && opts.OnRouterEvent != nil {
 			opts.OnRouterEvent(e.Seq, routerEv)
 		}

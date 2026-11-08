@@ -152,6 +152,12 @@ func run(ctx context.Context, args []string, e env) error {
 	lg := slog.New(slog.NewJSONHandler(e.stderr, nil))
 	d := e.deps
 	d.Logger = lg
+	// Обработчик сигналов ставится до Open: после строки llmrouter_opened сигнал уже обрабатывается, а не убивает процесс.
+	stopSig := context.CancelFunc(func() {})
+	if args[0] == "serve" && len(e.signals) > 0 {
+		ctx, stopSig = signal.NotifyContext(ctx, e.signals...)
+	}
+	defer stopSig()
 	rt, err := routersvc.Open(cfg, sec, routersvc.OpenOptions{Create: args[0] == "serve"}, d)
 	if err != nil {
 		return fail(err)
@@ -160,7 +166,7 @@ func run(ctx context.Context, args []string, e env) error {
 
 	switch args[0] {
 	case "serve":
-		return serve(ctx, rt, lg, e)
+		return serve(ctx, stopSig, rt, lg)
 	case "status":
 		if err := printJSON(e.stdout, rt.Status()); err != nil {
 			return fail(err)
@@ -188,13 +194,8 @@ func run(ctx context.Context, args []string, e env) error {
 	return nil
 }
 
-func serve(ctx context.Context, rt *routersvc.Runtime, lg *slog.Logger, e env) error {
-	sctx, stop := ctx, context.CancelFunc(func() {})
-	if len(e.signals) > 0 {
-		sctx, stop = signal.NotifyContext(ctx, e.signals...)
-	}
-	defer stop()
-	err := rt.Serve(sctx)
+func serve(ctx context.Context, stop context.CancelFunc, rt *routersvc.Runtime, lg *slog.Logger) error {
+	err := rt.Serve(ctx)
 	stop() // повторный сигнал при остановке — завершение по умолчанию
 	cerr := rt.Close()
 	lg.Info("shutdown", "serve_error", fmt.Sprint(err), "close_error", fmt.Sprint(cerr))

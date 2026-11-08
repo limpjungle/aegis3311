@@ -38,34 +38,52 @@ type GoldenCase struct {
 }
 
 // readGolden проверяет sha256 набора по manifest.json и возвращает кейсы (файлы открываются только на чтение).
+// Имя вида "probe-v4" — набор кандидата из manifest.staged, иначе — активный набор.
 func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 	t.Helper()
 	mb, err := os.ReadFile(filepath.Join(goldenDir, "data/manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	type entry struct {
+		File   string `json:"file"`
+		Sha256 string `json:"sha256"`
+		Cases  int    `json:"cases"`
+	}
 	var m struct {
-		Sets map[string]struct {
-			File   string `json:"file"`
-			Sha256 string `json:"sha256"`
-			Cases  int    `json:"cases"`
-		} `json:"sets"`
+		Sets   map[string]entry `json:"sets"`
+		Staged struct {
+			Sets map[string]entry `json:"sets"`
+		} `json:"staged"`
 	}
 	if err := json.Unmarshal(mb, &m); err != nil {
 		t.Fatal(err)
 	}
-	ms, ok := m.Sets[set]
+	sets, name := m.Sets, set
+	if n, ok := strings.CutSuffix(set, "-v4"); ok {
+		sets, name = m.Staged.Sets, n
+	}
+	ms, ok := sets[name]
 	if !ok {
 		t.Fatalf("в manifest нет набора %s", set)
 	}
-	path := filepath.Join(goldenDir, ms.File)
+	if ms.Cases != wantCases {
+		t.Fatalf("%s: кейсов в manifest %d, ожидалось %d", set, ms.Cases, wantCases)
+	}
+	return readGoldenEntry(t, ms.File, ms.Sha256, wantCases)
+}
+
+// readGoldenEntry читает набор по файлу, сверяя sha256 с manifest.
+func readGoldenEntry(t *testing.T, file, wantSHA string, wantCases int) []GoldenCase {
+	t.Helper()
+	path := filepath.Join(goldenDir, file)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != ms.Sha256 {
-		t.Fatalf("%s: sha256 %s не совпадает с manifest %s (данные изменены или это не закреплённый набор)", path, got, ms.Sha256)
+	if got := hex.EncodeToString(sum[:]); got != wantSHA {
+		t.Fatalf("%s: sha256 %s не совпадает с manifest %s (данные изменены или это не закреплённый набор)", path, got, wantSHA)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -93,8 +111,8 @@ func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != wantCases || ms.Cases != wantCases {
-		t.Fatalf("%s: кейсов %d (manifest %d), ожидалось %d", set, len(cases), ms.Cases, wantCases)
+	if len(cases) != wantCases {
+		t.Fatalf("%s: кейсов %d, ожидалось %d", file, len(cases), wantCases)
 	}
 	return cases
 }
@@ -123,7 +141,7 @@ func TestGoldenPodsConsistent(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 480}, {"dev", 113}} {
+	}{{"probe", 480}, {"dev", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
 		t.Run(set.name, func(t *testing.T) {
 			for _, c := range readGolden(t, set.name, set.cases) {
 				in := c.Input
@@ -157,7 +175,7 @@ func TestGoldenSetCrossCheck(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 480}, {"dev", 113}} {
+	}{{"probe", 480}, {"dev", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad := 0
 			for _, c := range readGolden(t, set.name, set.cases) {

@@ -36,6 +36,7 @@ type Deps struct {
 	Logger        *slog.Logger                              // nil → без вывода
 	WrapStore     func(routerstate.Store) routerstate.Store // только тесты: внедрение сбоев store
 	StatePoll     time.Duration                             // 0 → 1 с; период наблюдателя за состоянием в Serve
+	Assets        *openrouter.Assets                        // только тесты: nil → LoadAssets(goldensynthetic.FS)
 }
 
 type OpenOptions struct {
@@ -85,9 +86,11 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 	if poll <= 0 {
 		poll = time.Second
 	}
-	a, err := openrouter.LoadAssets(goldensynthetic.FS)
-	if err != nil {
-		return nil, err
+	a := d.Assets
+	if a == nil {
+		if a, err = openrouter.LoadAssets(goldensynthetic.FS); err != nil {
+			return nil, err
+		}
 	}
 	m, err := masker.New(masker.Config{PseudonymKey: sec.MaskerKey, InternalNets: nets})
 	if err != nil {

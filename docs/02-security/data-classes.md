@@ -229,6 +229,8 @@ Inceptron — один из четырёх fp8-endpoint'ов GLM 5.3 Flash, у �
 
    Реестр источников MVP — `dataclass.MVPRegistry`. Источники, где возможны ПДн граждан РФ (логи, трейсы, тикеты, постмортемы), помечены `MayContainPersonalDataRU`: наружу они не уходят независимо от класса.
 
+   Что intake реально подключает в MVP-A (`docs/04-operations/intake-deploy.md`): `alerts.alertmanager` (опрос API v2), `metrics.prometheus` (`query_range`, 31 точка с шагом 60 с), `db.aggregates` (из Prometheus: pgbouncer_exporter и postgres_exporter, не прямой доступ к СУБД), `k8s.events`, `k8s.deploys`, `k8s.rollout_status`, `manifests.k8s` (только PDB), `platform.topology` и `platform.action_catalog` (генерирует платформа). Логи, трейсы, `pg_stat_*`, код, тикеты и постмортемы не подключаются.
+
 2. **Неизвестный источник → restricted** (fail-closed), пока владелец не назначит класс.
 3. **Смешанный контекст получает максимальный класс** из его частей. Роутер не разбивает один промпт между моделями разных классов.
 4. **Сбой маскирования → restricted.** Ошибка, таймаут или низкая уверенность маскировщика переводят фрагмент в restricted. Источник запрещённого класса до маскировщика не доходит вообще.

@@ -56,6 +56,28 @@ type DecisionRecord struct {
 	Lease         *LeaseRef  `json:"lease"`      // только live
 	PostCheck     *PostCheck `json:"post_check"` // только live, после исполнения
 	TraceRef      string     `json:"trace_ref"`  // ссылка на трейс рассуждений (OTel GenAI / Langfuse); пусто, если нет
+	// Intake — откуда взят инцидент и что собрано; nil у записей без intake (старые записи, ручной route).
+	Intake *IntakeInfo `json:"intake,omitempty"`
+}
+
+// IntakeInfo — как intake собрал контекст инцидента (architecture.md §6.2, «Intake»). Без него в метриках baseline не
+// видно, что модель работала без метрик или не вызывалась вовсе.
+type IntakeInfo struct {
+	Source       string         `json:"source"`         // alerts.alertmanager
+	FirstAlertAt string         `json:"first_alert_at"` // RFC 3339 UTC Z: «начало инцидента» для baseline
+	CollectedAt  string         `json:"collected_at"`   // T0 снимка
+	Alerts       []string       `json:"alerts"`         // fingerprint'ы Alertmanager, ^[0-9a-f]{16}$, не больше 64
+	Sources      []SourceStatus `json:"sources"`        // не больше 32
+	Outcome      string         `json:"outcome"`        // routed | not_routed
+	Reason       string         `json:"reason"`         // при not_routed: причина из intakeReasons, иначе пусто
+}
+
+// SourceStatus — состояние одного источника при сборе. Error — только класс ошибки, без тела ответа.
+type SourceStatus struct {
+	Source string `json:"source"` // ID реестра dataclass
+	Status string `json:"status"` // ok | empty | partial | truncated | unavailable | skipped
+	Items  int    `json:"items"`
+	Error  string `json:"error"` // timeout | network | oversize | decode | http_<код>; не больше 64 байт
 }
 
 type IncidentRef struct {
@@ -221,6 +243,7 @@ func (r *DecisionRecord) Validate() error {
 		}
 	}
 	validateAnswer(r, bad)
+	validateIntake(r, bad)
 	if !levels[r.AutonomyLevel] {
 		bad("autonomy_level: неизвестный %q", r.AutonomyLevel)
 	}
@@ -470,5 +493,75 @@ func validateAnswer(r *DecisionRecord, bad func(string, ...any)) {
 			bad("answer.schema_errors: строка длиннее %d символов", maxSchemaErrChars)
 			break
 		}
+	}
+}
+
+var (
+	fingerprintRe  = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	intakeReasons  = map[string]bool{"source_unavailable": true, "rate_limited": true, "resolved_before_collect": true, "attempts_exhausted": true, "invalid_request": true}
+	sourceStatuses = map[string]bool{"ok": true, "empty": true, "partial": true, "truncated": true, "unavailable": true, "skipped": true}
+	sourceErrorRe  = regexp.MustCompile(`^(|timeout|network|oversize|decode|http_[0-9]{3})$`)
+)
+
+const (
+	maxIntakeAlerts  = 64
+	maxIntakeSources = 32
+	maxSourceError   = 64
+)
+
+func validateIntake(r *DecisionRecord, bad func(string, ...any)) {
+	in := r.Intake
+	if in == nil {
+		return
+	}
+	utc := func(name, s string) {
+		if t, err := time.Parse(time.RFC3339Nano, s); err != nil {
+			bad("intake.%s: %v", name, err)
+		} else if !strings.HasSuffix(s, "Z") || t.Location() != time.UTC {
+			bad("intake.%s: только UTC с суффиксом Z", name)
+		}
+	}
+	if in.Source == "" {
+		bad("intake.source обязателен")
+	}
+	utc("first_alert_at", in.FirstAlertAt)
+	utc("collected_at", in.CollectedAt)
+	if len(in.Alerts) > maxIntakeAlerts {
+		bad("intake.alerts: больше %d", maxIntakeAlerts)
+	}
+	for _, a := range in.Alerts {
+		if !fingerprintRe.MatchString(a) {
+			bad("intake.alerts: некорректный fingerprint %q", a)
+		}
+	}
+	if len(in.Sources) > maxIntakeSources {
+		bad("intake.sources: больше %d", maxIntakeSources)
+	}
+	for _, s := range in.Sources {
+		switch {
+		case s.Source == "":
+			bad("intake.sources: пустой источник")
+		case !sourceStatuses[s.Status]:
+			bad("intake.sources: неизвестный статус %q", s.Status)
+		case s.Items < 0:
+			bad("intake.sources: отрицательное число элементов")
+		case len(s.Error) > maxSourceError || !sourceErrorRe.MatchString(s.Error):
+			bad("intake.sources: некорректный класс ошибки %q", s.Error)
+		}
+	}
+	switch in.Outcome {
+	case "routed":
+		if in.Reason != "" {
+			bad("intake.reason: при routed пусто")
+		}
+	case "not_routed":
+		if !intakeReasons[in.Reason] {
+			bad("intake.reason: неизвестная причина %q", in.Reason)
+		}
+	default:
+		bad("intake.outcome: неизвестный %q", in.Outcome)
+	}
+	if (in.Outcome == "routed") != (r.LLM != nil) {
+		bad("intake: outcome routed и llm задаются вместе")
 	}
 }

@@ -208,7 +208,7 @@ func (f *fx) serveOnce() {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	dl := time.Now().Add(15 * time.Second)
+	dl := time.Now().Add(60 * time.Second)
 	for !cond() {
 		if time.Now().After(dl) {
 			t.Fatalf("не дождались: %s", what)

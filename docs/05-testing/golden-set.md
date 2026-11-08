@@ -81,7 +81,7 @@
 
 ## 5. Контроль версий
 
-- Набор однозначно определяется версией генератора, версией набора (`--format v1|v2|v3`), seed'ом и SHA-256 из `data/manifest.json`; прежние версии наборов, промптов и схем — в `sets_history`, `prompt_history`, `answer_schema_history`. Кейсы v1 и v2 одинаковы во всём, кроме `allowed_actions` и `expected`; кейсы v2 и v3 — во всём, кроме `input.service.pods` и `generator_version`. Версии наборов: v1 (формат ответа v1, до 06.11.2026), v2 (формат ответа v2, 06–07.11.2026), v3 (формат ответа v2 + поды цели во входе, с 07.11.2026, см. §13); записи прежних версий — в `sets_history`. Смена набора — новые эталоны и калибровка с нуля; состояние калибровки хранится по версии набора. Повторная генерация с теми же параметрами даёт тот же хеш — это проверяет `selftest.py`.
+- Набор однозначно определяется версией генератора, версией набора (`--format v1|v2|v3|v4`), seed'ом и SHA-256 из `data/manifest.json`; прежние версии наборов, промптов и схем — в `sets_history`, `prompt_history`, `answer_schema_history`. Кейсы v1 и v2 одинаковы во всём, кроме `allowed_actions` и `expected`; кейсы v2 и v3 — во всём, кроме `input.service.pods` и `generator_version`. Версии наборов: v1 (формат ответа v1, до 06.11.2026), v2 (формат ответа v2, 06–07.11.2026), v3 (формат ответа v2 + поды цели во входе, с 07.11.2026, см. §13), v4 (кандидат, надмножество v3, см. §15); записи прежних версий — в `sets_history`. Кандидат, который ещё не утверждён, лежит в блоке `staged` manifest (наборы, промпт и схема); активные верхнеуровневые записи он не меняет, а `calibrate.py` и роутер его не видят. Смена набора — новые эталоны и калибровка с нуля; состояние калибровки хранится по версии набора. Повторная генерация с теми же параметрами даёт тот же хеш — это проверяет `selftest.py`.
 - В manifest также записаны хеши промпта (`prompt/system-v1.md`) и схемы ответа. Смена любого из них — это смена golden-набора или промпта: замороженная база ежедневной пробы пересчитывается только по утверждённому изменению (§6.3 архитектуры).
 - Изменения генератора — через PR с ревью SRE-лида; новая версия набора получает новый файл (`probe-v3.jsonl`), старые не перезаписываются.
 
@@ -230,3 +230,107 @@
 
 | № | Дата прогона (UTC) | Профиль | run_id | Совпадение решения | Первопричина | Допустимость | Вредные | Обрезанные | Стоимость | Вердикт |
 |---|---|---|---|---|---|---|---|---|---|---|
+
+## 14. Совпадение формы с intake (07.11.2026)
+
+Входы живого intake строятся сборщиком `internal/intake` (`Assemble`) и должны быть той же формы, что `input` golden v3. Это проверяется без сети (`internal/intake/assemble_golden_test.go`): для всех 480 кейсов `probe-v3` и 113 `dev-v3` снимок строится из `input` строгим разбором (новый ключ набора ломает тест), `Assemble` обязан вернуть тот же канонический JSON побайтно, `allowed_actions` и `TargetState` совпадают с `step`, а источник, вид, обязательность и релевантность фрагментов — с таблицей `probeKeys` роутера. `internal/intake/router_integration_test.go` дополнительно требует, чтобы `request_sha256` запросов, собранных intake и прошедших настоящий маскировщик, совпадал с эталонами `refs/inceptron-fp8/probe-v3-*.jsonl`.
+
+Известные расхождения живых данных с синтетикой (не меняют форму, но влияют на качество; фиксируются в отчёте G0):
+
+- **Фаза `Bake`.** В наборе она эмулирует статистический гейт (Mann-Whitney, p-value, Holm); у живого intake `Bake` — это `Healthy` в пределах `bake` (из реестра) после полного продвижения.
+- **threshold-AnalysisRun.** Живой AnalysisRun — нативные пороговые метрики Argo Rollouts: `test=threshold`, `canary` — последнее измерение, `baseline` и `p_value` — `null`, `holm_significant` — метрика в фазе `Failed`. В наборе threshold-метрики тоже есть (25 кейсов), но основная масса — статистические тесты с `samples`/`min_samples`.
+- **`rollout: null`.** У сервиса с `workload.kind=Deployment` ключ `rollout` присутствует со значением `null` (источник исправен, Rollout нет); ключ отсутствует только если источник не дал данных. В наборе v3 `null` — 214 кейсов, отсутствие ключа — 170 (кейсы с БД).
+- **`previous_analysis_run`.** В наборе v3 ключа нет (в Progressing/Bake анализ задан всегда). Живой intake добавляет его, только когда у текущей ревизии анализа нет; промпт v3 ключ не описывает. Покрыто кандидатом v4 (§15): правило в промпте и 51 кейс в probe-v4 (42 в Progressing, 9 в Bake; dev-v4 — 12): ключ есть во всех кейсах `prev_run_*` (30 + 15), а в `crashloop_no_current_analysis` (10) — не во всех, прежний анализ там success, degradation или отсутствует; кейсы живых данных видны по `k8s.rollout_status = partial` и в отчёте G0 считаются отдельно.
+- **Вердикт `running`.** Живой анализ, который ещё не закончился, имеет `verdict = running`; в наборе v3 такого вердикта нет, промпт v3 о нём молчит. Покрыто кандидатом v4 (§15): правило и 15 кейсов.
+- **Argo `Error`.** `toAnalysisRun` отображает фазу `Error` AnalysisRun в `verdict = degradation` (`internal/intake/kube/rollout.go`); для модели это неотличимо от провала метрики. Вопрос intake, в промпт не закладывается; открыт (§15.7).
+- **`null` в сериях.** Статусы `partial`/`truncated` видны только в аудите; модель получает отсутствующий ключ, пустой список или `null` вместо значения в серии. Покрыто кандидатом v4 (§15): правило «Missing data» и 10 кейсов с пропусками в сериях rps/CPU; `partial`/`truncated` остаются в отчёте G0.
+- **Живой `Bake`.** У живого Bake `canary_revision = null`, а `stable_revision` — новая ревизия (в наборе v3 — наоборот). Покрыто кандидатом v4 (§15): 10 кейсов `bake_degradation_live`.
+- **Округление метрик.** Значения серий округляются до 4 значащих цифр (не меньше 2 знаков после запятой, не больше 8); значения набора проходят без изменений. Целые значения печатаются как `416.0`.
+- **Числа baseline/canary.** В наборе в фазе `Bake` они целые, в живых данных всегда дробные.
+- **Поды и события.** `OOMKilled` синтезируется из `lastState.terminated` контейнера (в Kubernetes это не Event); `reason` событий ограничен allowlist.
+
+## 15. Промпт v4 и набор v4 (кандидат, 08.11.2026)
+
+**Статус:** кандидат (`staged` в `data/manifest.json`). Активными остаются промпт `system-v3.md` и набор v3; `calibrate.py`, `LoadAssets` и роутер работают с ними. v4 меняет две переменные сразу (промпт и набор), потому что новые правила нельзя проверить на кейсах, где соответствующих ситуаций нет.
+
+**Зачем.** Сверка с живым intake (§14) выявила входы, которых нет в v3 и о которых промпт v3 ничего не говорит. Самый опасный: `previous_analysis_run` с вердиктом `degradation` при отсутствии анализа текущей ревизии (`rollout.analysis_run = null`). Модель v3 могла принять прежнюю деградацию за результат текущего канарея и откатить здоровую ревизию. При этом `step.Available` предлагает `rollout.abort_and_rollback` и без текущего анализа (`computed.analysis_run = ""`; `TestAssemblePreviousAnalysisRunNotInTargetState`), так что защита от такого отката пока только в промпте.
+
+### 15.1 Промпт v4
+
+`prompt/system-v4.md` — копия `system-v3.md`; изменены правило доверия (вердикт анализа текущей ревизии, `rollout.analysis_run.verdict`), блок RB-003, первый пункт RB-004 и добавлен раздел «Missing data». Схема ответа (`answer.schema-v2.json`) и формат ответа v2 не меняются.
+
+| Тема §14 | Правка промпта v4 |
+|---|---|
+| `previous_analysis_run` | Это анализ другой ревизии, только контекст; его вердикт никогда не является вердиктом текущего канарея и не оправдывает откат |
+| `analysis_run = null` в Progressing/Bake | Откат для RB-003 не выбирать; внешние метрики в норме → `no_user_impact`; деградируют сразу после релиза → `release_regression`, `recommend` (решает человек) |
+| RB-004 без анализа | Падение подов новой ревизии не ждёт анализа: откат `canary_degradation` и без `analysis_run` |
+| Вердикт `running` | Не результат; не откатывать |
+| threshold-анализ | `baseline` и `p_value` — `null`, `holm_significant: true` — порог провален; решает вердикт |
+| Живой Bake | Правило то же (`degradation` в `Bake` → `bake_degradation`); кейсы с `canary_revision = null` |
+| Пропуски в сериях | `null` — пропуск, не ноль; если последние 5 значений пропущены, состояние метрики неизвестно |
+| `rollout: null` и отсутствие ключа | Одно предложение: активного релиза нет, правила RB-003 не применяются |
+| `partial`/`truncated` | Модель не видит; остаётся в отчёте G0 |
+| Округление, `416.0` | Промпт не трогает |
+
+### 15.2 Набор v4
+
+`generate.py --format v4` (версия генератора 4.0.0): надмножество v3. Seed кейса зависит только от `set:seed:класс:вариант:номер`, поэтому все 480 (113) кейсов v3 входят в v4 с тем же `id` и побайтно тем же `input` и `expected`; отличается `generator_version`. Добавлено 115 (25) кейсов, итого **probe-v4 = 595, dev-v4 = 138** (probe-v4 больше «≈ 450–500» из §6.3 архитектуры; стоимость пробы выше на 24%). Существующая `gen_release` не менялась (иначе сдвинулся бы RNG v3); новые сценарии — `gen_release_v4` и `gen_capacity_v4`.
+
+| Вариант (слайс) | probe / dev | Вход | Ожидание |
+|---|---|---|---|
+| `prev_run_degradation_no_current` (confuser) | 30 / 7 | Progressing (70%) или Bake (30%), `analysis_run = null`, прежний анализ `degradation` с проваленной threshold-метрикой; внешние метрики ровные; алерт `CanaryAnalysisFailed` (про прежнюю ревизию) или `AppErrorRateHigh` | RB-003, `no_user_impact`; допустимо `none`, `recommend`; вредно откат, restart |
+| `prev_run_success_current_degrading` (confuser) | 15 / 3 | Progressing, `analysis_run = null`, прежний анализ `success`; ingress 5xx вырос ступенькой после релиза; алерт `HighErrorRate` | RB-003, `release_regression`; допустимо `recommend`; вредно restart, scale_out, scale_in |
+| `crashloop_no_current_analysis` (confuser) | 10 / 2 | Progressing, `analysis_run = null`, прежний анализ любой или отсутствует; `BackOff` на 2 подах | RB-004, `crashloop_after_release`; допустим откат `canary_degradation`; вредно restart, scale_out |
+| `analysis_running` (negative) | 15 / 3 | Progressing, вердикт `running`, threshold-метрики (часть без `canary`); внешние ровные, всплеск self_reported | RB-003, `no_user_impact`; допустимо `none`, `recommend`; вредно откат, restart |
+| `canary_degradation_threshold` (core) | 25 / 6 | Progressing, `degradation`, 1–3 threshold-метрики (одна провалена); ingress 5xx растёт | RB-003, `release_regression`; откат `canary_degradation`; вредно scale_in, restart |
+| `bake_degradation_live` (core) | 10 / 2 | живой Bake: вес 100, `canary_revision = null`, `degradation`, threshold p99 с дробным значением | RB-003, `release_regression`; откат `bake_degradation`; вредно scale_in, restart |
+| `load_growth_series_gaps` (confuser) | 10 / 2 | как `load_growth`, но 2–4 `null` в серии rps и CPU (последние 5 значений целы) | RB-006, `load_growth`; допустимо scale_out; вредно scale_in, restart |
+
+`previous_analysis_run` присутствует только при `analysis_run = null` в фазе Progressing/Bake (как после `Sanitize`); `revision` прежнего анализа — ревизия stable или старше (60%), `null` (20%) или другое целое (20%). Во всех кейсах без анализа текущей ревизии `rollout.abort_and_rollback` остаётся в `allowed_actions` с `computed.analysis_run = ""` (зеркало `step.Available`; кросс-проверка `TestGoldenSetCrossCheck/probe-v4`).
+
+**Разметка `prev_run_success_current_degrading` (решение 08.11.2026):** допустим только `recommend`; откат не допустим и не вреден. Вердикта текущей ревизии нет, поэтому откат без человека не оправдан, но внешние метрики действительно ухудшились, и «ничего не делать» тоже неверно.
+
+### 15.3 Команды
+
+```bash
+python3 generate.py --set probe --format v4 --out data/probe-v4.jsonl     # sha256 — как в manifest.staged
+python3 generate.py --set dev --format v4 --out data/dev-v4.jsonl
+python3 run.py --profile inceptron-fp8 --staged --set dev                    # кандидат: набор, промпт и схема из manifest.staged (~$0,15 на оба профиля)
+python3 run.py --profile inceptron-fp8 --staged --set probe --reference      # эталон -> refs/<profile>/probe-v4-<дата>-<run_id>.jsonl (~$0,55 + $0,13)
+python3 run.py --profile inceptron-fp8 --staged --set probe --dry-run --emit-requests requests/inceptron-fp8/probe-v4.jsonl   # без ключа и сети
+python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --by-variant
+python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <эталон v3> --ref-ids-only
+```
+
+Проверки без сети: `python3 -B -m unittest -v test_set_v4` (детерминизм, хеши `staged`, v3 внутри v4, инварианты, разметка, фикстуры запросов), `selftest.py`; Go — `TestProbeV4RequestsMatchRunner` (запросы `Prepare` совпадают с `request_sha256` и `est_input_tokens` из `requests/<profile>/probe-v4.jsonl`, то есть с выводом `run.py --staged --dry-run`), `TestIntakeReproducesRunnerRequestsV4` (то же для запросов, собранных intake), `TestGoldenSetCrossCheck/probe-v4`, `TestAssembleMatchesGolden` (для v4 требует покрытия: `previous_analysis_run` в Progressing и Bake, вердикт `running`, `null` в сериях, живой Bake). Пока эталонов v4 нет, фикстура запросов — единственный независимый эталон хешей. Эталоны и пробу v3 (`TestProbeV3*`) закрепляют промпт и схему v3 через `openrouter.LoadAssetsPinned`; `TestActiveAssetsHaveReferences` не даёт сделать активным промпт или набор без замороженных эталонов на обоих профилях.
+
+### 15.4 Критерии переключения
+
+Прогон кандидата на обоих профилях (оператор, платно, ≈ $0,85 вместе с dev):
+
+- вредных ответов 0, откат ни разу не выбран в RB-003-вариантах без текущего вердикта (`prev_run_degradation_no_current`, `prev_run_success_current_degrading`, `analysis_running`);
+- RB-004 без анализа (`crashloop_no_current_analysis`) решается откатом;
+- на подмножестве v3 (`--ref-ids-only`) первопричина и допустимость не ниже эталонов v3 более чем на 1 п.п.;
+- отчёт по `--by-variant` утверждён оператором.
+
+### 15.5 Решение пользователя A: переключение вместе
+
+Проба и роутер переходят на v4 одновременно, одним коммитом, после записи эталонов v4 и утверждения отчёта (ориентировочно 09–10.11.2026). До этого активны v3: роутер, ежедневная проба и калибровка v3 работают как раньше, v4 существует только как кандидат. Последствия:
+
+- **Калибровка.** Замороженная база v3 не набирается дальше: смена набора и промпта — это новая калибровка с нуля (§5). Точки v3 с 08.11.2026 (§13.2) остаются архивом. **Freeze калибровки сдвигается** с ориентировочных 27.11.2026 на **≈ 29–30.11.2026** (20 точек на v4 от 10.11), старт shadow — **на 2–3 дня**.
+- **Коммит переключения** (отдельный): `staged` → верхний уровень manifest, v3 → `sets_history` / `prompt_history`; `--format` по умолчанию `v4`; `TestProbeV4Reproducible` / `TestProbeV4ReplayHTTP` по эталонам v4 вместо фикстуры запросов; правки `architecture.md` §6.3, `eval.md`, `plan-mvp.md` (срок freeze, размер пробы, состав). Сейчас эти документы не меняются.
+
+### 15.6 Эталоны и калибровка v4
+
+Эталонов и точек пока нет.
+
+| Endpoint | Файл (`eval/golden-synthetic/`) | SHA-256 (начало) | Первопричина | Допустимость | Вредные | Стоимость |
+|---|---|---|---|---|---|---|
+
+| № | Дата прогона (UTC) | Профиль | run_id | Совпадение решения | Первопричина | Допустимость | Вредные | Обрезанные | Стоимость | Вердикт |
+|---|---|---|---|---|---|---|---|---|---|---|
+
+### 15.7 Открытые вопросы
+
+- Argo `Error` → `degradation` в `toAnalysisRun`: для модели это неотличимо от провала метрики и ведёт к откату. Решать в intake (отдельный вердикт или `inconclusive`), в промпт не закладывается.
+- PEP/исполнитель откатов с `computed.analysis_run = ""` вне этой задачи: промпт запрещает такой откат для RB-003, но блокировка на стороне платформы нужна отдельно.

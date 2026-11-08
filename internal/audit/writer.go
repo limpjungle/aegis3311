@@ -31,6 +31,7 @@ type Writer struct {
 	events map[string]struct{} // event_id событий роутера в цепочке
 	last   *RouterEvent        // последнее событие роутера в цепочке
 	log    []RouterEvent       // все события роутера в порядке цепочки
+	incs   map[string]struct{} // incident.id decision record'ов в цепочке
 }
 
 // OpenWriter открывает или создаёт файл цепочки. Существующий файл проверяется целиком (Verify с keys);
@@ -58,10 +59,11 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 	events := map[string]struct{}{}
 	var last *RouterEvent
 	var log []RouterEvent
+	incs := map[string]struct{}{}
 	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID, OnRouterEvent: func(_ uint64, ev *RouterEvent) {
 		events[ev.EventID], last = struct{}{}, ev
 		log = append(log, *ev)
-	}})
+	}, OnRecord: func(_ uint64, rec *DecisionRecord) { incs[rec.Incident.ID] = struct{}{} }})
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -74,7 +76,7 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 			return nil, err
 		}
 	}
-	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, log: log}, nil
+	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, log: log, incs: incs}, nil
 }
 
 // Head — текущая голова цепочки.
@@ -97,7 +99,22 @@ func (w *Writer) Append(rec *DecisionRecord) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	return w.appendBody(body)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e, err := w.appendBodyLocked(body)
+	if err == nil {
+		w.incs[rec.Incident.ID] = struct{}{}
+	}
+	return e, err
+}
+
+// HasIncidentRecord — есть ли в цепочке decision record этого инцидента. Страховка идемпотентности intake
+// после краха между Append и сохранением его состояния.
+func (w *Writer) HasIncidentRecord(id string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.incs[id]
+	return ok
 }
 
 // AppendEvent проверяет событие роутера и добавляет его в ту же цепочку (второй тип записи).

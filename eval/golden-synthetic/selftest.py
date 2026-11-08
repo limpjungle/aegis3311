@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def fmt_of(case):
-    return case.get("answer_format", "v1")  # у наборов v2 и v3 формат ответа v2
+    return case.get("answer_format", "v1")  # у наборов v2, v3 и v4 формат ответа v2
 
 
 def blank(fmt="v1"):
@@ -55,10 +55,39 @@ def dump(cases):
             + "\n").encode()
 
 
+NO_VERDICT_VARIANTS = {"prev_run_degradation_no_current", "prev_run_success_current_degrading", "analysis_running"}
+
+
+def check_v4(set_name, cases):
+    """Инварианты набора v4: надмножество v3, previous_analysis_run, computed.analysis_run, откат без вердикта."""
+    bad = []
+    v3 = {c["id"]: c for c in generate.build(set_name, generate.DEFAULT_SEED[set_name], "v3")}
+    by_id = {c["id"]: c for c in cases}
+    for cid, c3 in v3.items():
+        c4 = by_id.get(cid)
+        if c4 is None:
+            bad.append(f"{cid}: v3 case is missing in v4")
+        elif c4["input"] != c3["input"] or c4["expected"] != c3["expected"]:
+            bad.append(f"{cid}: input/expected differ from v3")
+    for c in cases:
+        ro = c["input"].get("rollout")
+        if ro and "previous_analysis_run" in ro and not (ro["analysis_run"] is None and ro["phase"] in ("Progressing", "Bake")):
+            bad.append(f"{c['id']}: previous_analysis_run with a current analysis or outside Progressing/Bake")
+        if ro and ro["analysis_run"] is None:
+            for act in c["input"]["allowed_actions"]:
+                if act["type"] == "rollout.abort_and_rollback" and act["computed"]["analysis_run"] != "":
+                    bad.append(f"{c['id']}: abort_and_rollback computed.analysis_run is not empty without an analysis")
+        if c["variant"] in NO_VERDICT_VARIANTS and any(
+                x["type"] == "rollout.abort_and_rollback" for x in c["expected"]["acceptable"]):
+            bad.append(f"{c['id']}: rollback is acceptable without a current verdict")
+    return bad
+
+
 def main():
     failures = []
     manifest = json.load(open(os.path.join(HERE, "data", "manifest.json"), encoding="utf-8"))
-    for set_name, fmt in (("probe", "v1"), ("dev", "v1"), ("probe", "v2"), ("dev", "v2"), ("probe", "v3"), ("dev", "v3")):
+    for set_name, fmt in (("probe", "v1"), ("dev", "v1"), ("probe", "v2"), ("dev", "v2"), ("probe", "v3"), ("dev", "v3"),
+                          ("probe", "v4"), ("dev", "v4")):
         afmt = generate.ANSWER_FORMAT[fmt]  # формат ответа модели; fmt — версия набора
         seed = generate.DEFAULT_SEED[set_name]
         a, b = generate.build(set_name, seed, fmt), generate.build(set_name, seed, fmt)
@@ -72,17 +101,20 @@ def main():
         want_file = f"data/{set_name}-{fmt}.jsonl"
         entries = [manifest["sets"][set_name]] + [h["sets"][set_name] for h in manifest.get("sets_history", [])
                                                   if set_name in h.get("sets", {})]
+        entries += [manifest["staged"]["sets"][set_name]] if set_name in manifest.get("staged", {}).get("sets", {}) else []
         entry = next((e for e in entries if e["file"] == want_file), None)
         if entry is None:
             failures.append(f"{set_name}/{fmt}: no manifest entry for {want_file}")
         elif entry["sha256"] != hashlib.sha256(dump(a)).hexdigest():
             failures.append(f"{set_name}/{fmt}: manifest sha256 differs from generator output")
-        if fmt == "v3":
+        if fmt in ("v3", "v4"):
             for c in a:
                 if any(k.startswith("_") for k in c["input"]):
                     failures.append(f"{c['id']}: input has service keys starting with '_'")
                 if not isinstance(c["input"].get("service", {}).get("pods"), list):
                     failures.append(f"{c['id']}: no input.service.pods")
+        if fmt == "v4":
+            failures += check_v4(set_name, a)
         ids = [c["id"] for c in a]
         if len(ids) != len(set(ids)):
             failures.append(f"{set_name}: duplicate ids")

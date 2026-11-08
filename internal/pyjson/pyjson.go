@@ -50,8 +50,16 @@ type Value struct {
 	Members []Member
 }
 
-func NewString(s string) *Value       { return &Value{Kind: String, S: s} }
-func NewBool(b bool) *Value           { return &Value{Kind: Bool, B: b} }
+func NewString(s string) *Value { return &Value{Kind: String, S: s} }
+func NewBool(b bool) *Value     { return &Value{Kind: Bool, B: b} }
+
+// NewFloat — дробное число (1 печатается как 1.0). NaN и ±Inf в JSON невыразимы — вместо них null.
+func NewFloat(f float64) *Value {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return NewNull()
+	}
+	return &Value{Kind: Number, IsFloat: true, F: f}
+}
 func NewNull() *Value                 { return &Value{Kind: Null} }
 func NewInt(i int64) *Value           { return &Value{Kind: Number, Int: strconv.FormatInt(i, 10)} }
 func NewArray(items ...*Value) *Value { return &Value{Kind: Array, Items: items} }

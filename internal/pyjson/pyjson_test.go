@@ -1,6 +1,9 @@
 package pyjson
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // Ожидаемые строки получены из Python 3: json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":")) и json.dumps(v).
 var pyCases = []struct{ in, canonical, pydefault string }{
@@ -36,6 +39,17 @@ func TestFloatRepr(t *testing.T) {
 	for f, want := range map[float64]string{1: "1.0", 1e16: "1e+16", 1e-5: "1e-05", 0.0001: "0.0001", 1e100: "1e+100", 123.456: "123.456", -2.5e-10: "-2.5e-10"} {
 		if got := FloatRepr(f); got != want {
 			t.Errorf("FloatRepr(%v) = %s, want %s", f, got, want)
+		}
+	}
+}
+
+func TestNewFloat(t *testing.T) {
+	for _, c := range []struct {
+		f    float64
+		want string
+	}{{1, "1.0"}, {0.1, "0.1"}, {416, "416.0"}, {math.NaN(), "null"}, {math.Inf(1), "null"}} {
+		if got := string(Marshal(NewFloat(c.f), Canonical)); got != c.want {
+			t.Errorf("NewFloat(%v) = %s, ожидается %s", c.f, got, c.want)
 		}
 	}
 }

@@ -137,7 +137,58 @@ func strList(v *pyjson.Value) []string {
 }
 
 // LoadAssets читает конфигурацию, промпт и схему из fsys, сверяя sha256 тех же байтов, что используются дальше.
+// Берутся активные manifest.prompt и manifest.answer_schema.
 func LoadAssets(fsys fs.FS) (*Assets, error) {
+	return loadAssets(fsys, func(man *pyjson.Value) (pf, ps, sf, ss string, err error) {
+		entry := func(key string) (file, sum string, err error) {
+			e := man.Get(key)
+			file, sum = strOf(e.Get("file")), strOf(e.Get("sha256"))
+			if file == "" || sum == "" {
+				return "", "", fmt.Errorf("openrouter: manifest: нет %s.file или %s.sha256", key, key)
+			}
+			return file, sum, nil
+		}
+		if pf, ps, err = entry("prompt"); err != nil {
+			return "", "", "", "", err
+		}
+		if sf, ss, err = entry("answer_schema"); err != nil {
+			return "", "", "", "", err
+		}
+		return pf, ps, sf, ss, nil
+	})
+}
+
+// LoadAssetsPinned — как LoadAssets, но промпт и схема заданы файлами; sha256 берётся из любой записи manifest
+// (активная, staged, prompt_history, answer_schema_history). Файла нет ни в одной записи — ошибка.
+// Только для тестов воспроизводимости и eval; роутер — LoadAssets.
+func LoadAssetsPinned(fsys fs.FS, promptFile, schemaFile string) (*Assets, error) {
+	return loadAssets(fsys, func(man *pyjson.Value) (pf, ps, sf, ss string, err error) {
+		find := func(file string, keys ...string) (string, error) {
+			var recs []*pyjson.Value
+			for _, k := range keys {
+				recs = append(recs, man.Get(k), man.Get("staged").Get(k))
+				if h := man.Get(k + "_history"); h != nil && h.Kind == pyjson.Array {
+					recs = append(recs, h.Items...)
+				}
+			}
+			for _, r := range recs {
+				if strOf(r.Get("file")) == file && strOf(r.Get("sha256")) != "" {
+					return strOf(r.Get("sha256")), nil
+				}
+			}
+			return "", fmt.Errorf("openrouter: manifest: файла %s нет ни в одной записи", file)
+		}
+		if ps, err = find(promptFile, "prompt"); err != nil {
+			return "", "", "", "", err
+		}
+		if ss, err = find(schemaFile, "answer_schema"); err != nil {
+			return "", "", "", "", err
+		}
+		return promptFile, ps, schemaFile, ss, nil
+	})
+}
+
+func loadAssets(fsys fs.FS, pick func(man *pyjson.Value) (pf, ps, sf, ss string, err error)) (*Assets, error) {
 	read := func(rel string) ([]byte, error) {
 		if !fs.ValidPath(rel) || rel == "." {
 			return nil, fmt.Errorf("openrouter: недопустимый путь %q", rel)
@@ -157,19 +208,7 @@ func LoadAssets(fsys fs.FS) (*Assets, error) {
 		return nil, fmt.Errorf("openrouter: manifest.json: %v", err)
 	}
 	a := &Assets{}
-	entry := func(key string) (file, sum string, err error) {
-		e := man.Get(key)
-		file, sum = strOf(e.Get("file")), strOf(e.Get("sha256"))
-		if file == "" || sum == "" {
-			return "", "", fmt.Errorf("openrouter: manifest: нет %s.file или %s.sha256", key, key)
-		}
-		return file, sum, nil
-	}
-	pf, ps, err := entry("prompt")
-	if err != nil {
-		return nil, err
-	}
-	sf, ss, err := entry("answer_schema")
+	pf, ps, sf, ss, err := pick(man)
 	if err != nil {
 		return nil, err
 	}

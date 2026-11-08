@@ -63,6 +63,69 @@
   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850",
   "since": "2026-11-06"
  },
+ "staged": {
+  "status": "candidate",
+  "set_format": "v4",
+  "generator_version": "4.0.0",
+  "answer_format": "v2",
+  "sets": {
+   "probe": {
+    "file": "data/probe-v4.jsonl",
+    "seed": 20261105,
+    "cases": 595,
+    "sha256": "32546136d95af37390d53223c029b4219da21e64656d2b665feccab54d362dba",
+    "by_class": {
+     "RB-001": 125,
+     "RB-002": 15,
+     "RB-003": 217,
+     "RB-004": 40,
+     "RB-005": 30,
+     "RB-006": 133,
+     "RB-007": 20,
+     "other": 15
+    },
+    "by_slice": {
+     "adversarial": 50,
+     "confuser": 170,
+     "core": 235,
+     "insufficient": 25,
+     "negative": 115
+    }
+   },
+   "dev": {
+    "file": "data/dev-v4.jsonl",
+    "seed": 20261106,
+    "cases": 138,
+    "sha256": "295f7dcaf605409a7722ac0ce33947f1e07faaddc173f6cd9a1443618fc3e114",
+    "by_class": {
+     "RB-001": 27,
+     "RB-002": 3,
+     "RB-003": 53,
+     "RB-004": 9,
+     "RB-005": 7,
+     "RB-006": 31,
+     "RB-007": 5,
+     "other": 3
+    },
+    "by_slice": {
+     "adversarial": 12,
+     "confuser": 38,
+     "core": 57,
+     "insufficient": 6,
+     "negative": 25
+    }
+   }
+  },
+  "prompt": {
+   "file": "prompt/system-v4.md",
+   "sha256": "446f4ba56095771d700063544d1ffb445cc65e4058e95fa7ad0083d111b9272f",
+   "changes": "previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data"
+  },
+  "answer_schema": {
+   "file": "schema/answer.schema-v2.json",
+   "sha256": "dbf46e6a5e06caad8f822374007aa8f6f77ab9ba864666cf7d893646c50bd850"
+  }
+ },
  "prompt_history": [
   {
    "file": "prompt/system-v1.md",

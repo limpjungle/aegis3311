@@ -10,8 +10,16 @@
 // остановленном aegis-intake. collect — живой сбор и Prepare без отправки в модель и без записи. replay — снимок в JSON
 // (intake.Snapshot) вместо живых источников: полный конвейер с записью shadow, -prepare-only — только Prepare.
 //
+// Kill switch (architecture.md §2.2): serve и replay опрашивают два канала (ConfigMap aegisops-control/kill-switch и объект
+// в S3), подписанные ключами дежурных (ed25519). Нет свежего подтверждения двумя подписями, global или свой кластер —
+// роутер в режиме off для всех целей этого intake: сбор продолжается, запись пишется (llm.mode=off), состояние — в
+// записи (kill_switch) и в цепочке аудита (события kill_switch_*); флаги — реальные для PEP. Первый опрос выполняется до
+// приёма инцидентов. collect kill switch не читает; aegis-llmrouter route его тоже не читает.
+//
 // Секреты — только из файлов: OPENROUTER_API_KEY_FILE, AEGIS_MASKER_KEY_FILE, AEGIS_AUDIT_KEY_FILE (как у aegis-llmrouter);
-// AEGIS_KUBE_TOKEN_FILE (serve, collect), AEGIS_ALERTMANAGER_TOKEN_FILE и AEGIS_PROMETHEUS_TOKEN_FILE (необязательны).
+// AEGIS_KUBE_TOKEN_FILE (serve, collect, replay), AEGIS_ALERTMANAGER_TOKEN_FILE и AEGIS_PROMETHEUS_TOKEN_FILE (необязательны);
+// kill switch (serve, replay): AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE, AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE (read-only пара)
+// и необязательный AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE. Ключ подписи аудита не должен входить в ключи kill switch (код 2).
 // Конфигурация — intake.Config (JSON, без секретов); пример и допущения окружения — docs/04-operations/intake-deploy.md.
 //
 // Коды выхода: 0 — успех; 1 — fail-closed (store, цепочка, аудит или состояние intake отказали или повреждены);
@@ -37,6 +45,8 @@ import (
 	"github.com/limpjungle/aegis3311/internal/intake/alertmanager"
 	"github.com/limpjungle/aegis3311/internal/intake/kube"
 	"github.com/limpjungle/aegis3311/internal/intake/prom"
+	"github.com/limpjungle/aegis3311/internal/killswitch"
+	"github.com/limpjungle/aegis3311/internal/killswitch/s3"
 	"github.com/limpjungle/aegis3311/internal/llmrouter"
 	"github.com/limpjungle/aegis3311/internal/pep"
 	"github.com/limpjungle/aegis3311/internal/policyengine"
@@ -128,6 +138,57 @@ func newLive(cfg intake.Config, getenv func(string) string, d intake.Durations) 
 	return Live{Alerts: am, Cluster: kc, Metrics: pr, DB: pr}, nil
 }
 
+// newKillSwitchSources создаёт каналы kill switch: ConfigMap через kube-клиент и объект в S3 (SigV4, ключи из файлов).
+func newKillSwitchSources(cfg intake.Config, getenv func(string) string, d intake.Durations) ([]killswitch.Source, error) {
+	k := cfg.KillSwitch
+	kc, err := kube.New(cfg.Kubernetes, getenv("AEGIS_KUBE_TOKEN_FILE"), d.Request)
+	if err != nil {
+		return nil, fmt.Errorf("kill switch: kubernetes: %w", err)
+	}
+	creds := s3.CredFiles{AccessKeyIDFile: getenv("AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE"),
+		SecretKeyFile: getenv("AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE"), SessionTokenFile: getenv("AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE")}
+	if _, err := creds.Load(); err != nil {
+		return nil, fmt.Errorf("kill switch: %w", err)
+	}
+	hc, err := s3.NewHTTPClient(k.OOB.CAFile, d.Request)
+	if err != nil {
+		return nil, fmt.Errorf("kill switch: %w", err)
+	}
+	cm := killswitch.FuncSource{Name: "configmap", F: func(ctx context.Context) ([]byte, error) {
+		return kc.ConfigMapData(ctx, k.ConfigMap.Namespace, k.ConfigMap.Name, killswitch.ConfigMapKey)
+	}}
+	return []killswitch.Source{cm, killswitch.S3Source(&s3.Client{Cfg: k.OOB, Creds: creds, HTTP: hc, MaxBytes: killswitch.MaxDocBytes})}, nil
+}
+
+// loadKillSwitchKeys читает ключи kill switch; ключ подписи аудита intake в них входить не должен: иначе компрометация
+// ключа агента выпустила бы run-документ.
+func loadKillSwitchKeys(cfg intake.Config, sec routersvc.Secrets) (killswitch.Keyring, error) {
+	keys, err := killswitch.LoadKeyring(cfg.KillSwitch.Keys)
+	if err != nil {
+		return nil, err
+	}
+	if _, dup := keys[audit.KeyID(sec.Signer.Public())]; dup {
+		return nil, errors.New("kill switch: ключ подписи аудита intake входит в ключи kill switch")
+	}
+	return keys, nil
+}
+
+// newMonitor собирает монитор kill switch и восстанавливает водяные знаки из последнего события цепочки.
+func newMonitor(cfg intake.Config, d intake.Durations, keys killswitch.Keyring, srcs []killswitch.Source, rt *routersvc.Runtime,
+	cat *catalog.Catalog, lg *slog.Logger) (*killswitch.Monitor, error) {
+	poll, skew, err := cfg.KillSwitch.Durations()
+	if err != nil {
+		return nil, err
+	}
+	m := killswitch.NewMonitor(srcs, keys, killswitch.ParseOptions{KnownAction: func(a string) bool { _, ok := cat.Get(a); return ok }},
+		killswitch.Options{Cluster: cfg.KillSwitch.Cluster, MaxSkew: skew}, poll, d.Request, rt.Writer,
+		audit.Actor{Kind: "system", ID: cfg.IntakeID})
+	m.Log = lg
+	ev, ok := rt.Writer.LastKillSwitchEvent()
+	m.Restore(ev, ok)
+	return m, nil
+}
+
 func run(ctx context.Context, args []string, e env) error {
 	const cmds = "команда: serve | collect | replay"
 	if len(args) == 0 {
@@ -192,6 +253,16 @@ func run(ctx context.Context, args []string, e env) error {
 	if err != nil {
 		return usage(err)
 	}
+	var ksKeys killswitch.Keyring
+	var ksSrc []killswitch.Source
+	if args[0] == "serve" || (args[0] == "replay" && !prepareOnly) {
+		if ksKeys, err = loadKillSwitchKeys(icfg, sec); err != nil {
+			return usage(err)
+		}
+		if ksSrc, err = newKillSwitchSources(icfg, e.getenv, dur); err != nil {
+			return usage(err)
+		}
+	}
 	var live Live
 	if args[0] != "replay" {
 		if live, err = e.live(icfg, e.getenv, dur); err != nil {
@@ -222,11 +293,11 @@ func run(ctx context.Context, args []string, e env) error {
 
 	switch args[0] {
 	case "serve":
-		return serve(ctx, icfg, dur, rt, live, cat, pol, lg, e)
+		return serve(ctx, icfg, dur, rt, live, cat, pol, ksKeys, ksSrc, lg, e)
 	case "collect":
 		return collect(ctx, icfg, dur, rt, live, cat, ns, svc, printInput, e)
 	}
-	return replay(ctx, icfg, rt, cat, pol, snap, prepareOnly, lg, e)
+	return replay(ctx, icfg, dur, rt, cat, pol, snap, prepareOnly, ksKeys, ksSrc, lg, e)
 }
 
 func newCollector(cfg intake.Config, d intake.Durations, l Live) *intake.Collector {
@@ -234,7 +305,7 @@ func newCollector(cfg intake.Config, d intake.Durations, l Live) *intake.Collect
 }
 
 func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *routersvc.Runtime, live Live, cat *catalog.Catalog,
-	pol *policyengine.Engine, lg *slog.Logger, e env) error {
+	pol *policyengine.Engine, ksKeys killswitch.Keyring, ksSrc []killswitch.Source, lg *slog.Logger, e env) error {
 	st, err := intake.OpenState(cfg.StatePath)
 	if err != nil {
 		return fail(err)
@@ -244,21 +315,32 @@ func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *route
 	lookup := func(ns, s string) (intake.ServiceConfig, bool) { return cfg.Lookup(ns, s) }
 	pipe := &intake.Pipeline{IntakeID: cfg.IntakeID, Env: cfg.Environment, Settle: d.Settle, MaxPerHour: cfg.MaxRoutedPerHour, SnapshotDir: cfg.SnapshotDir,
 		Cat: cat, Collector: newCollector(cfg, d, live), Router: rt.Router, Writer: rt.Writer, PEP: pep.New(cat, pol), State: st, Lookup: lookup, Log: lg}
+	mon, err := newMonitor(cfg, d, ksKeys, ksSrc, rt, cat, lg)
+	if err != nil {
+		return usage(err)
+	}
+	// Первая оценка — до приёма инцидентов: до неё цель остановлена (no_confirmation).
+	if err := mon.PollOnce(ctx); err != nil {
+		return fail(err)
+	}
+	rt.Router.SetStopGate(mon.Stopped)
+	pipe.KillSwitch = mon
 	closePolls := int((d.CloseAfter + d.Poll - 1) / d.Poll)
 	svc := &intake.Service{Cfg: cfg, D: d, Alerts: live.Alerts, State: st, Pipe: pipe, Router: rt.Router, Log: lg,
 		Tracker: intake.NewTracker(cfg.Environment, func(ns, s string) bool { _, ok := cfg.Lookup(ns, s); return ok }, closePolls, cfg.MaxOpenIncidents, st, lg)}
 
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	go func() { errs <- rt.Serve(gctx) }()
 	go func() { errs <- svc.Run(gctx) }()
+	go func() { errs <- mon.Run(gctx) }() // сбой записи события kill switch фатален: цель остаётся остановленной
 	first := <-errs
 	cancel()
-	second := <-errs
+	second, third := <-errs, <-errs
 	cerr := rt.Close()
-	lg.Info("shutdown", "serve_error", fmt.Sprint(errors.Join(first, second)), "close_error", fmt.Sprint(cerr))
-	if err := errors.Join(first, second, cerr); err != nil {
+	lg.Info("shutdown", "serve_error", fmt.Sprint(errors.Join(first, second, third)), "close_error", fmt.Sprint(cerr))
+	if err := errors.Join(first, second, third, cerr); err != nil {
 		return fail(err)
 	}
 	return nil
@@ -360,8 +442,8 @@ func (c *captureWriter) Append(r *audit.DecisionRecord) (audit.Entry, error) {
 	return c.RecordWriter.Append(r)
 }
 
-func replay(ctx context.Context, cfg intake.Config, rt *routersvc.Runtime, cat *catalog.Catalog, pol *policyengine.Engine, snap intake.Snapshot,
-	prepareOnly bool, lg *slog.Logger, e env) error {
+func replay(ctx context.Context, cfg intake.Config, d intake.Durations, rt *routersvc.Runtime, cat *catalog.Catalog, pol *policyengine.Engine, snap intake.Snapshot,
+	prepareOnly bool, ksKeys killswitch.Keyring, ksSrc []killswitch.Source, lg *slog.Logger, e env) error {
 	inc, svc := intake.ReplayIncident(cfg.Environment, snap)
 	if sc, ok := cfg.Lookup(svc.Namespace, svc.Service); ok {
 		svc = sc
@@ -376,15 +458,23 @@ func replay(ctx context.Context, cfg intake.Config, rt *routersvc.Runtime, cat *
 		}
 		return prepareOut(ctx, rt, req, map[string]any{"incident_id": inc.ID, "sources": nonNilStatus(snap.Status)}, false, e)
 	}
+	mon, err := newMonitor(cfg, d, ksKeys, ksSrc, rt, cat, lg)
+	if err != nil {
+		return usage(err)
+	}
+	if err := mon.PollOnce(ctx); err != nil {
+		return fail(err)
+	}
+	rt.Router.SetStopGate(mon.Stopped)
 	st, _ := intake.OpenState("")
 	if err := st.Do(func(d *intake.Data) { d.Incidents[inc.ID] = &inc }); err != nil {
 		return fail(err)
 	}
 	cw := &captureWriter{RecordWriter: rt.Writer}
 	pipe := &intake.Pipeline{IntakeID: cfg.IntakeID, Env: cfg.Environment, MaxPerHour: cfg.MaxRoutedPerHour, SnapshotDir: cfg.SnapshotDir, Cat: cat,
-		Collector: intake.FixtureCollector{Snap: snap}, Router: rt.Router, Writer: cw, PEP: pep.New(cat, pol), State: st, Log: lg,
+		Collector: intake.FixtureCollector{Snap: snap}, Router: rt.Router, Writer: cw, PEP: pep.New(cat, pol), State: st, Log: lg, KillSwitch: mon,
 		Lookup: func(ns, s string) (intake.ServiceConfig, bool) { return svc, ns == svc.Namespace && s == svc.Service }}
-	err := pipe.Handle(ctx, &inc)
+	err = pipe.Handle(ctx, &inc)
 	if cw.last != nil {
 		if perr := printJSON(e.stdout, map[string]any{"record": cw.last}); perr != nil {
 			return fail(perr)

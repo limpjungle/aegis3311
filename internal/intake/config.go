@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/limpjungle/aegis3311/internal/killswitch"
+	"github.com/limpjungle/aegis3311/internal/killswitch/s3"
 	"github.com/limpjungle/aegis3311/internal/routersvc"
 	"github.com/limpjungle/aegis3311/internal/strictjson"
 )
@@ -41,6 +43,10 @@ const maxConfigBytes = 4 << 20
 //	    "query": "sum by (pod) (container_memory_working_set_bytes{namespace=\"$namespace\",pod=~\"$service-.*\",container!=\"\",container!=\"POD\"}) / 1048576"},
 //	   {"name": "pgbouncer_cl_waiting", "unit": "count", "applies": "database", "max_series": 1,
 //	    "query": "sum(pgbouncer_pools_client_waiting_connections{database=\"$database\"})"}],
+//	 "kill_switch": {"cluster": "prod-eu-1",
+//	                 "keys": [{"path": "/etc/aegis/ks/ivanov.pub.pem", "issuer": "oncall-ivanov", "role": "oncall"},
+//	                          {"path": "/etc/aegis/ks/petrov.pub.pem", "issuer": "oncall-petrov", "role": "oncall"}],
+//	                 "oob": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis-kill-switch", "key": "kill-switch.json", "path_style": true}},
 //	 "db_queries": {"pool_size": "max(pgbouncer_config_pool_size{database=\"$database\"})",
 //	                "max_connections": "max(pg_settings_max_connections{cluster=\"$pg_cluster\"})"}}
 //
@@ -66,6 +72,33 @@ type Config struct {
 	Services          []ServiceConfig   `json:"services"`
 	Metrics           []MetricSpec      `json:"metrics"`
 	DBQueries         map[string]string `json:"db_queries"`
+	KillSwitch        *KillSwitchConfig `json:"kill_switch"` // обязателен: без него intake не запускается
+}
+
+// KillSwitchConfig — kill switch (architecture.md §2.2). Секреты S3 (ключи доступа) — только из файлов в
+// AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE, AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE и необязательный
+// AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE; токен чтения ConfigMap — общий AEGIS_KUBE_TOKEN_FILE.
+type KillSwitchConfig struct {
+	Cluster      string               `json:"cluster"`       // цель intake: точное совпадение с clusters[] документа
+	Keys         []killswitch.KeySpec `json:"keys"`          // открытые ключи: не меньше двух oncall; renewer — ноль или не меньше двух
+	PollInterval string               `json:"poll_interval"` // 10s
+	MaxSkew      string               `json:"max_skew"`      // 2m: допустимое опережение issued_at
+	ConfigMap    struct {
+		Namespace string `json:"namespace"` // aegisops-control
+		Name      string `json:"name"`      // kill-switch
+	} `json:"configmap"`
+	OOB s3.Config `json:"oob"` // внешний канал: объект в S3
+}
+
+// KillSwitchDurations — разобранные интервалы kill switch.
+func (k KillSwitchConfig) Durations() (poll, skew time.Duration, err error) {
+	if poll, err = time.ParseDuration(k.PollInterval); err != nil || poll < time.Second || poll > 5*time.Minute {
+		return 0, 0, errors.New("kill_switch.poll_interval: от 1s до 5m")
+	}
+	if skew, err = time.ParseDuration(k.MaxSkew); err != nil || skew < 0 || skew > 10*time.Minute {
+		return 0, 0, errors.New("kill_switch.max_skew: от 0 до 10m")
+	}
+	return poll, skew, nil
 }
 
 // HTTPSource — адрес и TLS источника. Токен (необязательный) — файл из AEGIS_ALERTMANAGER_TOKEN_FILE / AEGIS_PROMETHEUS_TOKEN_FILE.
@@ -151,6 +184,20 @@ func (c *Config) Defaults() {
 	}
 	if c.MaxRoutedPerHour == 0 {
 		c.MaxRoutedPerHour = 6
+	}
+	if k := c.KillSwitch; k != nil {
+		if k.PollInterval == "" {
+			k.PollInterval = "10s"
+		}
+		if k.MaxSkew == "" {
+			k.MaxSkew = "2m"
+		}
+		if k.ConfigMap.Namespace == "" {
+			k.ConfigMap.Namespace = "aegisops-control"
+		}
+		if k.ConfigMap.Name == "" {
+			k.ConfigMap.Name = "kill-switch"
+		}
 	}
 	for i := range c.Services {
 		if c.Services[i].LLMMode == "" {
@@ -254,6 +301,9 @@ func (c Config) Validate() error {
 				return bad("headers: недопустимый заголовок %q (токен — только через *_TOKEN_FILE)", k)
 			}
 		}
+	}
+	if err := c.validateKillSwitch(); err != nil {
+		return err
 	}
 	if len(c.Services) == 0 {
 		return bad("services: реестр сервисов пуст")
@@ -393,4 +443,62 @@ func (c Config) Lookup(ns, svc string) (ServiceConfig, bool) {
 // Expand подставляет значения реестра в PromQL. Значения — только из реестра (DNS-имена), никогда из алерта.
 func (s ServiceConfig) Expand(q string) string {
 	return strings.NewReplacer("$namespace", s.Namespace, "$service", s.Service, "$database", s.Database, "$pg_cluster", s.PgCluster).Replace(q)
+}
+
+func (c Config) validateKillSwitch() error {
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("конфигурация intake: kill_switch: "+format, a...)
+	}
+	k := c.KillSwitch
+	if k == nil {
+		return errors.New("конфигурация intake: секция kill_switch обязательна")
+	}
+	for name, v := range map[string]string{"cluster": k.Cluster, "configmap.namespace": k.ConfigMap.Namespace, "configmap.name": k.ConfigMap.Name} {
+		if !dnsNameRe.MatchString(v) {
+			return bad("%s: ожидается DNS-имя, получено %q", name, v)
+		}
+	}
+	if _, _, err := k.Durations(); err != nil {
+		return fmt.Errorf("конфигурация intake: %w", err)
+	}
+	if len(k.Keys) < 2 || len(k.Keys) > 16 {
+		return bad("keys: от 2 до 16 ключей")
+	}
+	var oncall, renewer int
+	for _, s := range k.Keys {
+		if !filepath.IsAbs(s.Path) {
+			return bad("keys: путь %q должен быть абсолютным", s.Path)
+		}
+		switch s.Role {
+		case killswitch.RoleOncall:
+			oncall++
+		case killswitch.RoleRenewer:
+			renewer++
+		default:
+			return bad("keys: роль %q не из oncall | renewer", s.Role)
+		}
+		if s.Issuer == "" || len(s.Issuer) > 256 || strings.ContainsAny(s.Issuer, " \t\r\n\x00") {
+			return bad("keys: некорректный issuer %q", s.Issuer)
+		}
+	}
+	if oncall < 2 || renewer == 1 {
+		return bad("keys: нужно не меньше двух oncall; renewer — ноль или не меньше двух")
+	}
+	o := k.OOB
+	u, err := url.Parse(o.Endpoint)
+	if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return bad("oob.endpoint: ожидается https://host[:port] без пути и запроса")
+	}
+	for name, v := range map[string]string{"region": o.Region, "bucket": o.Bucket, "key": o.Key} {
+		if v == "" || len(v) > 1024 || strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return bad("oob.%s: обязателен, без управляющих символов", name)
+		}
+	}
+	if strings.HasPrefix(o.Key, "/") {
+		return bad("oob.key не начинается с /")
+	}
+	if o.CAFile != "" && !filepath.IsAbs(o.CAFile) {
+		return bad("oob.ca_file должен быть абсолютным путём")
+	}
+	return nil
 }

@@ -14,8 +14,12 @@ func miniConfig() map[string]any {
 		"alertmanager": map[string]any{"url": "https://am.example:9093"},
 		"prometheus":   map[string]any{"url": "https://prom.example:9090"},
 		"kubernetes":   map[string]any{"api_url": "https://k8s.example"},
-		"services":     []any{map[string]any{"namespace": "shop", "service": "geo-svc", "workload": map[string]any{"kind": "Deployment", "name": "geo-svc"}}},
-		"metrics":      []any{map[string]any{"name": "m1", "unit": "ms", "query": `up{namespace="$namespace"}`}},
+		"kill_switch": map[string]any{"cluster": "prod-eu-1",
+			"keys": []any{map[string]any{"path": "/etc/aegis/ks/a.pub.pem", "issuer": "oncall-a", "role": "oncall"},
+				map[string]any{"path": "/etc/aegis/ks/b.pub.pem", "issuer": "oncall-b", "role": "oncall"}},
+			"oob": map[string]any{"endpoint": "https://storage.example", "region": "r1", "bucket": "b", "key": "kill-switch.json", "path_style": true}},
+		"services": []any{map[string]any{"namespace": "shop", "service": "geo-svc", "workload": map[string]any{"kind": "Deployment", "name": "geo-svc"}}},
+		"metrics":  []any{map[string]any{"name": "m1", "unit": "ms", "query": `up{namespace="$namespace"}`}},
 	}
 }
 
@@ -186,5 +190,55 @@ func TestExpandRegistryOnly(t *testing.T) {
 		if _, ok := c.Lookup(p[0], p[1]); ok {
 			t.Errorf("найдена %v", p)
 		}
+	}
+}
+
+func ks0(m map[string]any) map[string]any { return m["kill_switch"].(map[string]any) }
+
+func TestConfigKillSwitch(t *testing.T) {
+	c, err := parse(t, miniConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := c.KillSwitch
+	if k.PollInterval != "10s" || k.MaxSkew != "2m" || k.ConfigMap.Namespace != "aegisops-control" || k.ConfigMap.Name != "kill-switch" {
+		t.Errorf("умолчания: %+v", k)
+	}
+	if p, s, err := k.Durations(); err != nil || p.String() != "10s" || s.String() != "2m0s" {
+		t.Errorf("Durations: %v %v %v", p, s, err)
+	}
+	renewers := func(m map[string]any, n int) {
+		ks := ks0(m)["keys"].([]any)
+		for i := 0; i < n; i++ {
+			ks = append(ks, map[string]any{"path": "/etc/aegis/ks/r" + string(rune('0'+i)) + ".pem", "issuer": "renewer-" + string(rune('0'+i)), "role": "renewer"})
+		}
+		ks0(m)["keys"] = ks
+	}
+	bad := map[string]func(m map[string]any){
+		"нет секции":         func(m map[string]any) { delete(m, "kill_switch") },
+		"меньше двух oncall": func(m map[string]any) { ks0(m)["keys"] = ks0(m)["keys"].([]any)[:1] },
+		"один renewer":       func(m map[string]any) { renewers(m, 1) },
+		"неизвестная роль":   func(m map[string]any) { ks0(m)["keys"].([]any)[0].(map[string]any)["role"] = "admin" },
+		"относительный путь": func(m map[string]any) { ks0(m)["keys"].([]any)[0].(map[string]any)["path"] = "a.pem" },
+		"http endpoint":      func(m map[string]any) { ks0(m)["oob"].(map[string]any)["endpoint"] = "http://s3.example" },
+		"endpoint с путём":   func(m map[string]any) { ks0(m)["oob"].(map[string]any)["endpoint"] = "https://s3.example/b" },
+		"пустой bucket":      func(m map[string]any) { ks0(m)["oob"].(map[string]any)["bucket"] = "" },
+		"key с /":            func(m map[string]any) { ks0(m)["oob"].(map[string]any)["key"] = "/k.json" },
+		"cluster не DNS":     func(m map[string]any) { ks0(m)["cluster"] = "Prod EU" },
+		"poll 0.5s":          func(m map[string]any) { ks0(m)["poll_interval"] = "500ms" },
+		"skew 1h":            func(m map[string]any) { ks0(m)["max_skew"] = "1h" },
+		"неизвестное поле":   func(m map[string]any) { ks0(m)["x"] = 1 },
+	}
+	for name, mut := range bad {
+		m := miniConfig()
+		mut(m)
+		if _, err := parse(t, m); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+	}
+	m := miniConfig()
+	renewers(m, 2)
+	if _, err := parse(t, m); err != nil {
+		t.Errorf("два renewer: %v", err)
 	}
 }

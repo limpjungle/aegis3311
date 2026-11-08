@@ -51,6 +51,10 @@ func (s *stubTr) Get(context.Context, string, http.Header) (openrouter.Response,
 	return openrouter.Response{Status: 200, Body: []byte(healthBody)}, nil
 }
 
+func pemCert(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 func rnd(t testing.TB, n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -139,6 +143,10 @@ func fakeStack(t *testing.T, tr *stubTr) (cfgPath string, getenv func(string) st
 			"annotations": map[string]string{"deployment.kubernetes.io/revision": "7", "ci/deployed-by": "sa-ci"}}}}})))
 	km.HandleFunc("/apis/policy/v1/namespaces/shop/poddisruptionbudgets", auth(jsonH(map[string]any{"items": []map[string]any{
 		{"spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]string{"app": "geo-svc"}}, "minAvailable": 1}}}})))
+	ksf := newFakeKS(t, dir)
+	ksf.setRun(t)
+	lastKS = ksf
+	km.HandleFunc("/api/v1/namespaces/aegisops-control/configmaps/kill-switch", auth(ksf.configMap))
 	mk := func(h http.Handler) (*httptest.Server, string) {
 		s := httptest.NewTLSServer(h)
 		t.Cleanup(s.Close)
@@ -150,6 +158,7 @@ func fakeStack(t *testing.T, tr *stubTr) (cfgPath string, getenv func(string) st
 	as, aca := mk(am)
 	ps, pca := mk(pm)
 	ks, kca := mk(km)
+	s3URL, s3CA := ksf.serveS3(t, dir)
 
 	write := func(name, content string) string {
 		p := filepath.Join(dir, name)
@@ -181,9 +190,10 @@ func fakeStack(t *testing.T, tr *stubTr) (cfgPath string, getenv func(string) st
 			"autoscaler": map[string]string{"kind": "HorizontalPodAutoscaler", "name": "geo-svc"}, "declared_min": 2, "database": "geo", "pg_cluster": "pg-main"}},
 		"metrics": []map[string]any{{"name": "memory_working_set_mb", "unit": "MB", "query": "x{namespace=\"$namespace\"}", "series_labels": []string{"pod"}},
 			{"name": "app_http_5xx_ratio", "unit": "ratio", "query": "y{service=\"$service\"}", "self_reported": true}},
-		"db_queries": dbq})
+		"kill_switch": ksf.config(s3URL, s3CA), "db_queries": dbq})
 	cfgPath = write("intake.json", string(ic))
-	env := map[string]string{"OPENROUTER_API_KEY_FILE": apiP, "MASKER": "", "AEGIS_MASKER_KEY_FILE": maskP, routersvc.AuditKeyEnv: privP, "AEGIS_KUBE_TOKEN_FILE": tokP}
+	idP, skP := write("s3-id", "AKIDTEST\n"), write("s3-secret", "secret"+rnd(t, 8)+"\n")
+	env := map[string]string{"AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE": idP, "AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE": skP, "OPENROUTER_API_KEY_FILE": apiP, "MASKER": "", "AEGIS_MASKER_KEY_FILE": maskP, routersvc.AuditKeyEnv: privP, "AEGIS_KUBE_TOKEN_FILE": tokP}
 	sec, err := routersvc.LoadSecrets(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
@@ -208,13 +218,21 @@ func TestServeEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recs []audit.DecisionRecord
-	if _, err := audit.Verify(bytes.NewReader(b), keys, audit.VerifyOptions{ChainID: "chain-test", OnRecord: func(_ uint64, r *audit.DecisionRecord) { recs = append(recs, *r) }}); err != nil {
+	var kev []audit.KillSwitchEvent
+	if _, err := audit.Verify(bytes.NewReader(b), keys, audit.VerifyOptions{ChainID: "chain-test", OnRecord: func(_ uint64, r *audit.DecisionRecord) { recs = append(recs, *r) },
+		OnKillSwitchEvent: func(_ uint64, ev *audit.KillSwitchEvent) { kev = append(kev, *ev) }}); err != nil {
 		t.Fatalf("%v\n%s", err, errb.String())
+	}
+	if len(kev) != 1 || kev[0].Kind != "kill_switch_released" || kev[0].From != "none" || kev[0].LatencyMs == nil {
+		t.Fatalf("события kill switch: %+v", kev)
 	}
 	if len(recs) != 1 {
 		t.Fatalf("записей %d\n%s", len(recs), errb.String())
 	}
 	r := recs[0]
+	if r.KillSwitch == nil || r.KillSwitch.State.Stopped || !r.KillSwitch.State.LivenessConfirmed || r.KillSwitch.StoppedDuringRoute {
+		t.Errorf("kill_switch в записи: %+v", r.KillSwitch)
+	}
 	if r.Intake == nil || r.Intake.Outcome != "routed" || r.Verdict == nil || r.Answer == nil || r.Answer.Status != "ok" || r.Verdict.Decision == "" {
 		t.Fatalf("запись: %+v %+v\n%s", r, r.Intake, errb.String())
 	}

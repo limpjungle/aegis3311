@@ -128,6 +128,10 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{Mode: req.Mode, Assets: r.o.Assets}
+	if g := r.stopGate.Load(); req.Mode == ModeHybrid && g != nil && (*g)() {
+		res.Mode = ModeOff
+		req.Mode = ModeOff
+	}
 	if req.Mode == ModeOff {
 		res.notSent("mode_off")
 		return res, nil

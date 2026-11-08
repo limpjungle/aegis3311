@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/limpjungle/aegis3311/internal/audit"
@@ -83,6 +84,18 @@ type Router struct {
 	halted     bool
 	haltReason string
 	pins       map[string]Role
+
+	stopGate atomic.Pointer[func() bool] // kill switch: true — запросы в hybrid не уходят (см. SetStopGate)
+}
+
+// SetStopGate задаёт ворота kill switch: пока gate() == true, Route в режиме hybrid ничего не отправляет и
+// возвращает off/mode_off. Страховка поверх решения intake (оно ставит Mode=off до вызова Route). nil снимает ворота.
+func (r *Router) SetStopGate(gate func() bool) {
+	if gate == nil {
+		r.stopGate.Store(nil)
+		return
+	}
+	r.stopGate.Store(&gate)
 }
 
 func isNil(v any) bool {

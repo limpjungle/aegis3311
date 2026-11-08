@@ -58,6 +58,8 @@ type DecisionRecord struct {
 	TraceRef      string     `json:"trace_ref"`  // ссылка на трейс рассуждений (OTel GenAI / Langfuse); пусто, если нет
 	// Intake — откуда взят инцидент и что собрано; nil у записей без intake (старые записи, ручной route).
 	Intake *IntakeInfo `json:"intake,omitempty"`
+	// KillSwitch — состояние kill switch на момент решения; nil у записей без kill switch (старые записи, ручной route).
+	KillSwitch *KillSwitchInfo `json:"kill_switch,omitempty"`
 }
 
 // IntakeInfo — как intake собрал контекст инцидента (architecture.md §6.2, «Intake»). Без него в метриках baseline не
@@ -244,6 +246,7 @@ func (r *DecisionRecord) Validate() error {
 	}
 	validateAnswer(r, bad)
 	validateIntake(r, bad)
+	validateKillSwitch(r, bad)
 	if !levels[r.AutonomyLevel] {
 		bad("autonomy_level: неизвестный %q", r.AutonomyLevel)
 	}

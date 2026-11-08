@@ -39,6 +39,15 @@
  "failover": {"fail_threshold": 3, "hysteresis": "10m", "health_interval": "30s"}}
 ```
 
+### Kill switch (Этап 0a)
+
+Устройство — [architecture.md](../00-overview/architecture.md) §2.2, учение — [kill-switch-drill.md](kill-switch-drill.md).
+
+- **Каналы недоступны или нет свежего подтверждения → остановка.** Транспортный сбой одного канала допустим до TTL подтверждения (кэш), затем intake переходит в `no_confirmation`: сбор идёт, роутер в режиме `off`, `llm.mode=off` в записях, PEP получает `liveness_confirmed=false`. Это штатное безопасное направление; проверьте `aegis-killswitch status` и журнал (`kill_switch_channel` с классом ошибки).
+- **Продление встало** (renewer не работает, один из двух не отвечает, `waiting_peer` в выводе): в журнале intake предупреждение `kill_switch_confirmation_expiring` (до конца подтверждения меньше трети TTL). Починить renewer либо вручную опубликовать подтверждение двумя дежурными: `aegis-killswitch release -out` → второй дежурный `cosign -publish`.
+- **Действующий stop блокирует продление** (renewer отказывает): снять остановку может только `release` двух дежурных, документ должен быть новее stop.
+- **Сбой записи события в цепочку** при снятии — intake остаётся остановленным и завершается с кодом 1 (fail-closed): починить диск и перезапустить.
+
 ### Intake (`aegis-intake`, Этап 0a)
 
 `aegis-intake serve` сам держит роутер (цепочку и store), поэтому процедура оператора `aegis-llmrouter` выполняется при остановленном intake: `systemctl stop aegis-intake` → `aegis-llmrouter status/resume` (см. выше) → `systemctl start aegis-intake`. Одновременный запуск `aegis-llmrouter serve` и `aegis-intake serve` даёт код 3.

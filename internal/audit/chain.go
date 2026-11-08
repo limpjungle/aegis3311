@@ -28,8 +28,8 @@ const (
 // GenesisHash — prev_hash первой записи цепочки.
 var GenesisHash = "sha256:" + strings.Repeat("0", 64)
 
-// Entry — строка файла цепочки (JSONL). В цепочке два типа записей: decision record (RecordSchema) и событие
-// роутера (RouterEventSchema); тип определяется полем schema внутри record, в хеш записи он не входит. Hash = sha256 канонического JSON {schema, chain_id, seq, prev_hash,
+// Entry — строка файла цепочки (JSONL). В цепочке три типа записей: decision record (RecordSchema), событие
+// роутера (RouterEventSchema) и событие kill switch (KillSwitchEventSchema); тип определяется полем schema внутри record, в хеш записи он не входит. Hash = sha256 канонического JSON {schema, chain_id, seq, prev_hash,
 // record_sha256}; Sig — подпись Ed25519 над "aegisops/audit-entry/v1\x00" + Hash, base64.
 type Entry struct {
 	Schema       string          `json:"schema"`
@@ -132,13 +132,15 @@ type VerifyOptions struct {
 	OnRouterEvent func(seq uint64, ev *RouterEvent)
 	// OnRecord — если не nil, вызывается для каждого decision record'а после проверки уникальности record_id.
 	OnRecord func(seq uint64, rec *DecisionRecord)
+	// OnKillSwitchEvent — если не nil, вызывается для каждого события kill switch после проверки уникальности event_id.
+	OnKillSwitchEvent func(seq uint64, ev *KillSwitchEvent)
 }
 
 // VerifyStats — число проверенных записей цепочки по типам.
-type VerifyStats struct{ Records, RouterEvents uint64 }
+type VerifyStats struct{ Records, RouterEvents, KillSwitchEvents uint64 }
 
 // Verify читает цепочку целиком и проверяет: формат строк, непрерывность seq, ссылки prev_hash, хеши записей
-// и записей, подписи, схему и валидность записей обоих типов, уникальность record_id и event_id и checkpoint'ы.
+// и записей, подписи, схему и валидность записей всех типов, уникальность record_id и event_id и checkpoint'ы.
 // Незавершённая последняя строка (без перевода строки) — ошибка: запись могла оборваться при сбое.
 func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 	head := Head{ChainID: opts.ChainID, Hash: GenesisHash}
@@ -213,6 +215,7 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 		_ = json.Unmarshal(e.Record, &peek) // дубли ключей и неизвестные поля ловит strictjson.Decode ниже
 		var id, idName string
 		var routerEv *RouterEvent
+		var ksEv *KillSwitchEvent
 		var decRec *DecisionRecord
 		switch peek.Schema {
 		case RecordSchema:
@@ -237,6 +240,17 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 			id, idName = ev.EventID, "event_id"
 			routerEv = &ev
 			stats.RouterEvents++
+		case KillSwitchEventSchema:
+			var ev KillSwitchEvent
+			if err := strictjson.Decode(e.Record, &ev); err != nil {
+				return fail("kill switch event: %v", err)
+			}
+			if err := ev.Validate(); err != nil {
+				return fail("kill switch event: %v", err)
+			}
+			id, idName = ev.EventID, "event_id"
+			ksEv = &ev
+			stats.KillSwitchEvents++
 		default:
 			return fail("неизвестная схема записи %q", peek.Schema)
 		}
@@ -249,6 +263,9 @@ func Verify(r io.Reader, keys Keyring, opts VerifyOptions) (Head, error) {
 		}
 		if routerEv != nil && opts.OnRouterEvent != nil {
 			opts.OnRouterEvent(e.Seq, routerEv)
+		}
+		if ksEv != nil && opts.OnKillSwitchEvent != nil {
+			opts.OnKillSwitchEvent(e.Seq, ksEv)
 		}
 		for _, c := range cps[e.Seq] {
 			if c.ChainID != e.ChainID || c.HeadHash != e.Hash {

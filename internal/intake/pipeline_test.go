@@ -12,6 +12,7 @@ import (
 
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/catalog"
+	"github.com/limpjungle/aegis3311/internal/killswitch"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
 	"github.com/limpjungle/aegis3311/internal/pep"
 	"github.com/limpjungle/aegis3311/internal/policyengine"
@@ -43,6 +44,11 @@ func verifyRecords(t testing.TB, cfg routersvc.Config, keys audit.Keyring) []aud
 	return recs
 }
 
+// runningState — kill switch в рабочем состоянии: подтверждено, ничего не остановлено.
+func runningState() killswitch.State {
+	return killswitch.State{KillSwitchState: audit.KillSwitchState{LivenessConfirmed: true, Actions: []string{}}}
+}
+
 func newTestPipeline(t testing.TB, rt *routersvc.Runtime, snap Snapshot, dir string) (*Pipeline, Incident, *State) {
 	t.Helper()
 	pol, err := policyengine.Load(context.Background(), policy.FS)
@@ -54,7 +60,7 @@ func newTestPipeline(t testing.TB, rt *routersvc.Runtime, snap Snapshot, dir str
 	st, _ := OpenState("")
 	st.Do(func(d *Data) { d.Incidents[inc.ID] = &inc })
 	p := &Pipeline{IntakeID: "intake-test", Env: "staging", MaxPerHour: 6, SnapshotDir: dir, Cat: cat, Collector: FixtureCollector{snap},
-		Router: rt.Router, Writer: rt.Writer, PEP: pep.New(cat, pol), State: st,
+		Router: rt.Router, Writer: rt.Writer, PEP: pep.New(cat, pol), State: st, KillSwitch: killswitch.Static{S: runningState()},
 		Lookup: func(ns, s string) (ServiceConfig, bool) { return svc, ns == svc.Namespace && s == svc.Service }}
 	return p, inc, st
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/limpjungle/aegis3311/internal/audit"
 	"github.com/limpjungle/aegis3311/internal/catalog"
+	"github.com/limpjungle/aegis3311/internal/killswitch"
 	"github.com/limpjungle/aegis3311/internal/llmrouter"
 	"github.com/limpjungle/aegis3311/internal/pep"
 	"github.com/limpjungle/aegis3311/internal/pyjson"
@@ -24,6 +25,12 @@ import (
 type Router interface {
 	Route(context.Context, llmrouter.Request) (*llmrouter.Result, error)
 	CloseIncident(string) error
+}
+
+// KillSwitchView — состояние kill switch для конвейера. Guard возвращает контекст, отменяемый при остановке цели.
+type KillSwitchView interface {
+	State() killswitch.State
+	Guard(context.Context) (context.Context, context.CancelFunc)
 }
 
 type RecordWriter interface {
@@ -59,6 +66,7 @@ type Pipeline struct {
 	Router      Router
 	Writer      RecordWriter
 	PEP         Verdicter
+	KillSwitch  KillSwitchView // nil — как «остановлен, no_confirmation»: модель не вызывается
 	State       *State
 	Lookup      func(ns, svc string) (ServiceConfig, bool)
 	Now         func() time.Time
@@ -74,6 +82,14 @@ func (p *Pipeline) now() time.Time {
 		return p.Now()
 	}
 	return time.Now()
+}
+
+// ksState — снимок состояния kill switch; без источника цель считается остановленной (fail-safe).
+func (p *Pipeline) ksState() killswitch.State {
+	if p.KillSwitch == nil {
+		return killswitch.State{KillSwitchState: audit.KillSwitchState{Stopped: true, Reason: "no_confirmation", Actions: []string{}}}
+	}
+	return p.KillSwitch.State()
 }
 
 func (p *Pipeline) log() *slog.Logger {
@@ -208,10 +224,26 @@ func (p *Pipeline) Handle(ctx context.Context, inc *Incident) error {
 		}
 	}
 
-	if !p.take(svc.Service, p.now()) {
+	snapKS := p.ksState()
+	gctx := ctx
+	if mode == llmrouter.ModeHybrid {
+		if snapKS.Stopped { // сбор выполнен, модель не вызывается; слот лимита не тратится
+			req = llmrouter.Request{IncidentID: id, Service: svc.Service, Mode: llmrouter.ModeOff}
+			p.log().Warn("intake_kill_switch_off", "incident", id, "reason", snapKS.Reason)
+		} else {
+			if !p.take(svc.Service, p.now()) {
+				return p.recordNotRouted(cur, svc, "rate_limited", stats, t0)
+			}
+			if p.KillSwitch != nil {
+				var gcancel context.CancelFunc
+				gctx, gcancel = p.KillSwitch.Guard(ctx)
+				defer gcancel()
+			}
+		}
+	} else if !p.take(svc.Service, p.now()) {
 		return p.recordNotRouted(cur, svc, "rate_limited", stats, t0)
 	}
-	rctx, cancel := context.WithTimeout(ctx, RouteTimeout)
+	rctx, cancel := context.WithTimeout(gctx, RouteTimeout)
 	defer cancel()
 	res, rerr := p.Router.Route(rctx, req)
 	if res == nil {
@@ -228,12 +260,20 @@ func (p *Pipeline) Handle(ctx context.Context, inc *Incident) error {
 	if ctx.Err() != nil { // остановка сервиса во время Route: запись-ошибку не пишем, инцидент остаётся open
 		return nil
 	}
+	// Остановка во время вызова: контекст отменён Guard'ом либо ворота роутера перевели запрос в off.
+	stoppedDuring := !snapKS.Stopped && (errors.Is(context.Cause(gctx), killswitch.ErrEngaged) ||
+		(req.Mode == llmrouter.ModeHybrid && res.Mode == llmrouter.ModeOff))
 
 	rec := p.baseRecord(cur, svc, "routed", "", stats, t0)
 	res.Apply(rec)
+	rec.KillSwitch = &audit.KillSwitchInfo{State: snapKS.Info(), StoppedDuringRoute: stoppedDuring}
+	pepKS := snapKS
+	if stoppedDuring { // ответ, пришедший во время остановки, оценивается по флагам после неё
+		pepKS = p.ksState()
+	}
 	if ps := res.Parsed; ps != nil && ps.Status == "ok" && res.ErrorKind == "" && ps.Answer != nil {
 		if act := ps.Answer.Get("action"); act != nil {
-			v := p.PEP.EvaluateRaw(ctx, pyjson.Marshal(act, pyjson.Canonical), ShadowContext(p.Env, snap.Topology, st))
+			v := p.PEP.EvaluateRaw(ctx, pyjson.Marshal(act, pyjson.Canonical), ShadowContext(p.Env, snap.Topology, st, pepKS))
 			rec.Verdict, rec.AutonomyLevel = &v, v.EffectiveLevel
 		}
 	}
@@ -277,7 +317,8 @@ func (p *Pipeline) baseRecord(inc Incident, svc ServiceConfig, outcome, reason s
 	if stats == nil {
 		stats = []audit.SourceStatus{}
 	}
-	return &audit.DecisionRecord{Schema: audit.RecordSchema, RecordID: audit.NewRecordID(), RecordedAt: audit.Timestamp(p.now()),
+	ks := &audit.KillSwitchInfo{State: p.ksState().Info()}
+	return &audit.DecisionRecord{Schema: audit.RecordSchema, RecordID: audit.NewRecordID(), RecordedAt: audit.Timestamp(p.now()), KillSwitch: ks,
 		Mode: audit.ModeShadow, Incident: audit.IncidentRef{ID: inc.ID, Service: svc.Service, Environment: p.Env},
 		Initiator: audit.Actor{Kind: "agent", ID: p.IntakeID}, RetrievedDocs: []string{}, AutonomyLevel: "L0",
 		Intake: &audit.IntakeInfo{Source: "alerts.alertmanager", FirstAlertAt: audit.Timestamp(inc.FirstAlertAt), CollectedAt: audit.Timestamp(t0),

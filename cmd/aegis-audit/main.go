@@ -1,4 +1,4 @@
-// Команда aegis-audit: ключи, запись и проверка цепочки decision record'ов и событий роутера.
+// Команда aegis-audit: ключи, запись и проверка цепочки decision record'ов, событий роутера и событий kill switch.
 //
 //	aegis-audit keygen     -priv KEY.pem -pub KEY.pub.pem
 //	aegis-audit append     -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] < record.json | event.json
@@ -130,6 +130,12 @@ func run(args []string, in io.Reader, out io.Writer) error {
 				return rejected(fmt.Errorf("router event: %w", err))
 			}
 			e, err = w.AppendEvent(&ev)
+		case audit.KillSwitchEventSchema:
+			var ev audit.KillSwitchEvent
+			if err := strictjson.Decode(raw, &ev); err != nil {
+				return rejected(fmt.Errorf("kill switch event: %w", err))
+			}
+			e, err = w.AppendKillSwitchEvent(&ev)
 		default:
 			return rejected(fmt.Errorf("неизвестная схема записи %q", peek.Schema))
 		}
@@ -169,7 +175,8 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			Checkpoints  int    `json:"checkpoints_checked"`
 			Records      uint64 `json:"records"`
 			RouterEvents uint64 `json:"router_events"`
-		}{head, len(opts.Checkpoints), stats.Records, stats.RouterEvents})
+			KillSwitch   uint64 `json:"kill_switch_events"`
+		}{head, len(opts.Checkpoints), stats.Records, stats.RouterEvents, stats.KillSwitchEvents})
 	default:
 		return usage(fmt.Errorf("неизвестная команда %q", args[0]))
 	}

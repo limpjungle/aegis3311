@@ -54,6 +54,59 @@ subjects: [{kind: ServiceAccount, name: aegis-intake, namespace: aegis-system}]
 
 `list pods` возвращает спеки подов вместе с `env`; intake читает из ответа только имена, фазы, `imageID` и `lastState.terminated` — принято (риск зафиксирован в [threat-model.md](../02-security/threat-model.md)); альтернатива — metadata-only запросы.
 
+## Kill switch
+
+Устройство — [architecture.md](../00-overview/architecture.md) §2.2, угроза — T-22 в [threat-model.md](../02-security/threat-model.md), учение G0 — [kill-switch-drill.md](kill-switch-drill.md). Intake опрашивает два канала с одним и тем же подписанным документом: ConfigMap `aegisops-control/kill-switch` (ключ `document`) и объект в S3 (внешний канал). Нет свежего подтверждения двумя подписями — роутер в режиме `off` для всех целей intake.
+
+**1. Namespace и ConfigMap.** ConfigMap создаётся при установке (server-side apply без права `create` его не создаёт); начальное содержимое пусто — intake остановлен, пока не опубликован первый документ:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata: {name: aegisops-control}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: kill-switch, namespace: aegisops-control}
+data: {}
+```
+
+**2. Права (Role в `aegisops-control`, не ClusterRole).** Intake — `get` на ConfigMap `kill-switch`; дежурные и renewer — `get`, `patch`:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: aegis-kill-switch-read, namespace: aegisops-control}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: [kill-switch], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: aegis-kill-switch-write, namespace: aegisops-control}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: [kill-switch], verbs: [get, patch]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: aegis-intake-kill-switch, namespace: aegisops-control}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: aegis-kill-switch-read}
+subjects: [{kind: ServiceAccount, name: aegis-intake, namespace: aegis-system}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: aegis-oncall-kill-switch, namespace: aegisops-control}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: aegis-kill-switch-write}
+subjects: [{kind: Group, name: aegis-oncall, apiGroup: rbac.authorization.k8s.io}, {kind: ServiceAccount, name: aegis-renewer, namespace: aegisops-control}]
+```
+
+Токен записи — `AEGIS_KILLSWITCH_KUBE_TOKEN_FILE` у `aegis-killswitch`. Renewer с внешней инфраструктуры нужен kube-доступ на запись в ConfigMap; если его нет, renewer работает только с `-channels oob`: через ConfigMap тогда проходят только остановки и снятия, а продление подтверждения идёт по внешнему каналу — допустимо, потому что хватает одного свежего подтверждения в любом канале.
+
+**3. Bucket (внешний канал).** Отдельный аккаунт или облако (не там, где живёт кластер), версионирование включено, без CDN и кэширующих прокси, адресация path-style для Yandex Object Storage. Политики по ключам доступа: intake — только `GetObject` на объект `kill-switch.json` (отдельная read-only пара); дежурные — `GetObject`/`PutObject` на него же; renewer — `GetObject`/`PutObject` на него и на `renew/*`, а также `s3:ListBucket` на префикс `renew/` (без него S3 отвечает 403 вместо 404 на ещё не созданную подпись пира; `renew` трактует 403 как «подписи пока нет»). Lifecycle для префикса `renew/` — удаление через 7 дней. У intake, дежурных и renewer — разные ключи доступа и разные файлы (`AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE`, при временных ключах `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`); файлы перечитываются на каждый запрос, ротация без рестарта.
+
+**4. Ключи подписи.** Каждый ключ — `aegis-audit keygen -priv KEY.pem -pub KEY.pub.pem`; приватный остаётся у владельца, публичный раздаётся в `kill_switch.keys` на всех intake и в конфигурацию `aegis-killswitch`. Нужно не меньше двух ключей `oncall` (разные люди) и два ключа `renewer` на независимых хостах и планировщиках (запуск `aegis-killswitch renew` раз в час, в разные минуты). Ключ подписи аудита intake в `keys` входить не должен (код 2). На всех участниках — NTP: `latency_ms` и проверка свежести зависят от часов (допуск `max_skew`, по умолчанию 2m).
+
+**5. Начальная публикация.** Первый документ — `release` одним дежурным (`aegis-killswitch release -out release.json`), подпись вторым (`aegis-killswitch cosign -in release.json -publish`). До этого intake остановлен (`no_confirmation`).
+
+**6. Поведение.** Документ в каналах — полное состояние: любой новый документ заменяет предыдущий. Остановка одной подписью по `actions` (или по чужому кластеру) без второй подписи заменяет run и останавливает этот intake по `no_confirmation` (fail-safe); чтобы запретить только тип действия и сохранить работу LLM, документ с `actions` должен нести две подписи (`stop -action ... -out`, затем `cosign -publish`). Событие смены состояния — запись `aegisops/killswitch-event/v1` в цепочке аудита; состояние на момент решения — поле `kill_switch` decision record'а. Предупреждения в журнале: `kill_switch_channel` (канал недоступен или документ отвергнут, с классом), `kill_switch_confirmation_expiring` (до конца подтверждения меньше трети TTL: продление не пришло). `replay` без `-prepare-only` читает kill switch так же, как `serve`, и требует kube-токен и ключи S3 чтения; `collect` и `aegis-llmrouter route` kill switch не читают.
+
 ## Листы Kubernetes: пагинация и потолки
 
 Листы читаются постранично (`limit`/`continue`) с потолком объектов и страниц; размер страницы подобран так, чтобы ответ помещался в лимит на один ответ (8 MiB).
@@ -90,7 +143,7 @@ aegis_sessions_by_state:
 
 ## Пример конфигурации
 
-Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
+Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`. Секция `kill_switch` обязательна (без неё intake не запускается); пути ключей и пример `oob` — см. «Kill switch» ниже. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
 
 ```json
 {
@@ -105,6 +158,18 @@ aegis_sessions_by_state:
   "alertmanager": {"url": "https://alertmanager.monitoring.svc:9093", "ca_file": "/etc/aegis/ca.pem", "matchers": ["aegis_flow=\"true\""]},
   "prometheus": {"url": "https://prometheus.monitoring.svc:9090", "ca_file": "/etc/aegis/ca.pem", "headers": {}},
   "kubernetes": {"api_url": "https://kubernetes.default.svc", "ca_file": "/etc/aegis/kube-ca.pem", "author_annotation": "ci.example.com/deployed-by"},
+  "kill_switch": {
+    "cluster": "prod-eu-1",
+    "keys": [
+      {"path": "/etc/aegis/kill-switch/oncall-ivanov.pub.pem", "issuer": "oncall-ivanov", "role": "oncall"},
+      {"path": "/etc/aegis/kill-switch/oncall-petrov.pub.pem", "issuer": "oncall-petrov", "role": "oncall"},
+      {"path": "/etc/aegis/kill-switch/renewer-a.pub.pem", "issuer": "renewer-a", "role": "renewer"},
+      {"path": "/etc/aegis/kill-switch/renewer-b.pub.pem", "issuer": "renewer-b", "role": "renewer"}
+    ],
+    "poll_interval": "10s", "max_skew": "2m",
+    "configmap": {"namespace": "aegisops-control", "name": "kill-switch"},
+    "oob": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis-kill-switch", "key": "kill-switch.json", "path_style": true, "ca_file": ""}
+  },
   "services": [
     {"namespace": "shop", "service": "geo-svc", "workload": {"kind": "Rollout", "name": "geo-svc"},
      "autoscaler": {"kind": "HorizontalPodAutoscaler", "name": "geo-svc"}, "declared_min": 2,

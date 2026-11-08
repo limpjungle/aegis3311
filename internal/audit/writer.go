@@ -19,7 +19,7 @@ var ErrWriterFailed = errors.New("запись аудита остановлен
 // ErrLocked — файл цепочки занят другим писателем (flock).
 var ErrLocked = errors.New("audit: файл цепочки занят другим писателем")
 
-// Writer добавляет decision record'ы и события роутера в файл цепочки (JSONL, только дописывание).
+// Writer добавляет decision record'ы, события роутера и события kill switch в файл цепочки (JSONL, только дописывание).
 // Один писатель на файл: при открытии берётся эксклюзивная блокировка (flock).
 type Writer struct {
 	mu     sync.Mutex
@@ -30,6 +30,7 @@ type Writer struct {
 	now    func() time.Time
 	events map[string]struct{} // event_id событий роутера в цепочке
 	last   *RouterEvent        // последнее событие роутера в цепочке
+	lastKS *KillSwitchEvent    // последнее событие kill switch в цепочке
 	log    []RouterEvent       // все события роутера в порядке цепочки
 	incs   map[string]struct{} // incident.id decision record'ов в цепочке
 }
@@ -58,12 +59,14 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 	}
 	events := map[string]struct{}{}
 	var last *RouterEvent
+	var lastKS *KillSwitchEvent
 	var log []RouterEvent
 	incs := map[string]struct{}{}
 	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID, OnRouterEvent: func(_ uint64, ev *RouterEvent) {
 		events[ev.EventID], last = struct{}{}, ev
 		log = append(log, *ev)
-	}, OnRecord: func(_ uint64, rec *DecisionRecord) { incs[rec.Incident.ID] = struct{}{} }})
+	}, OnRecord: func(_ uint64, rec *DecisionRecord) { incs[rec.Incident.ID] = struct{}{} },
+		OnKillSwitchEvent: func(_ uint64, ev *KillSwitchEvent) { events[ev.EventID], lastKS = struct{}{}, ev }})
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -76,7 +79,7 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 			return nil, err
 		}
 	}
-	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, log: log, incs: incs}, nil
+	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, lastKS: lastKS, log: log, incs: incs}, nil
 }
 
 // Head — текущая голова цепочки.
@@ -143,6 +146,43 @@ func (w *Writer) AppendEvent(ev *RouterEvent) (Entry, error) {
 	w.last = &cp
 	w.log = append(w.log, cp)
 	return e, nil
+}
+
+// AppendKillSwitchEvent проверяет событие kill switch и добавляет его в ту же цепочку (третий тип записи).
+func (w *Writer) AppendKillSwitchEvent(ev *KillSwitchEvent) (Entry, error) {
+	if err := w.usable(); err != nil {
+		return Entry{}, err
+	}
+	if err := ev.Validate(); err != nil {
+		return Entry{}, fmt.Errorf("kill switch event: %w", err)
+	}
+	body, err := json.Marshal(ev)
+	if err != nil {
+		return Entry{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, dup := w.events[ev.EventID]; dup {
+		return Entry{}, fmt.Errorf("kill switch event: event_id %q уже в цепочке", ev.EventID)
+	}
+	e, err := w.appendBodyLocked(body)
+	if err != nil {
+		return e, err
+	}
+	w.events[ev.EventID] = struct{}{}
+	cp := *ev
+	w.lastKS = &cp
+	return e, nil
+}
+
+// LastKillSwitchEvent — последнее событие kill switch в цепочке; false — событий нет.
+func (w *Writer) LastKillSwitchEvent() (KillSwitchEvent, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.lastKS == nil {
+		return KillSwitchEvent{}, false
+	}
+	return *w.lastKS, true
 }
 
 // HasEvent — есть ли в цепочке событие роутера с этим event_id.

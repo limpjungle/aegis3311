@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -519,5 +520,31 @@ func TestAuditFailureHalts(t *testing.T) {
 	sink.failOn = ""
 	if err := rg.r.Resume(ctx, "sre-1"); err != nil || rg.r.State().Halted {
 		t.Fatalf("Resume при рабочем аудите: %v %+v", err, rg.r.State())
+	}
+}
+
+// Ворота kill switch: hybrid при поднятых воротах не уходит в сеть и не доходит до маскировщика; off и открытые ворота — как раньше.
+func TestRouteStopGate(t *testing.T) {
+	ctx := context.Background()
+	m := &identityMasker{}
+	tr := &stubTransport{post: func([]byte) (openrouter.Response, error) { return reply("Inceptron", 100, 50), nil }}
+	rg := newRig(t, m, tr, "", nil)
+	var stopped atomic.Bool
+	rg.r.SetStopGate(stopped.Load)
+	stopped.Store(true)
+	res, err := rg.r.Route(ctx, routeReq(t))
+	if err != nil || res.Mode != ModeOff || res.Outcome != "not_sent" || res.Reason != "mode_off" || res.DegradeL1 || m.calls.Load() != 0 || tr.calls != 0 {
+		t.Fatalf("ворота: %v %+v", err, res)
+	}
+	applyOK(t, res)
+	stopped.Store(false)
+	res, err = rg.r.Route(ctx, routeReq(t))
+	if err != nil || res.Outcome != "sent" || tr.calls == 0 {
+		t.Fatalf("ворота открыты: %v %+v", err, res)
+	}
+	rg.r.SetStopGate(nil)
+	stopped.Store(true)
+	if res, _ := rg.r.Route(ctx, routeReq(t)); res.Outcome != "sent" {
+		t.Error("снятые ворота продолжают действовать")
 	}
 }

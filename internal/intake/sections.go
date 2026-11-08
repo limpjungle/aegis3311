@@ -42,7 +42,7 @@ func TargetStateOf(s Snapshot) step.TargetState {
 		st.Rollout = &step.Rollout{Name: r.Name, Phase: r.Phase}
 		// PreviousAnalysisRun сознательно игнорируется: computed.analysis_run — только анализ текущей ревизии.
 		if r.AnalysisRun != nil {
-			st.Rollout.AnalysisRun = r.AnalysisRun.Name
+			st.Rollout.AnalysisRun, st.Rollout.AnalysisVerdict = r.AnalysisRun.Name, r.AnalysisRun.Verdict
 		}
 	}
 	if d := s.DB.Value; d != nil {

@@ -15,10 +15,13 @@ type Autoscaler struct {
 }
 
 // Rollout — состояние Argo Rollout. Name у Healthy-rollout может быть null; AnalysisRun — имя активного AnalysisRun, может быть пустым.
+// AnalysisVerdict — вердикт этого AnalysisRun (success | degradation | inconclusive | error | running), пусто без анализа.
+// Правила шага его не используют; его читает PEP: автономный откат только при вердикте, подтверждающем причину отката.
 type Rollout struct {
-	Name        *string `json:"name"`
-	Phase       string  `json:"phase"`
-	AnalysisRun string  `json:"analysis_run"`
+	Name            *string `json:"name"`
+	Phase           string  `json:"phase"`
+	AnalysisRun     string  `json:"analysis_run"`
+	AnalysisVerdict string  `json:"analysis_verdict,omitempty"`
 }
 
 type PgBouncer struct {

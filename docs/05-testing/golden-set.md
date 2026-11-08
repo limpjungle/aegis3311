@@ -380,7 +380,9 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 
 - это `cap`, а не `deny`: вердикт `downgrade` (или `noop`, если запрошен L0), нарушением G0 не является; G0 считает только `deny`;
 - RB-004 без анализа (`crashloop_no_current_analysis`) решается откатом по промпту, но PEP понижает его до L1: решает человек. Это сознательная цена защиты от отката по чужому вердикту;
-- `policy_revision` поднята до `0.2.0`; эталоны вердиктов PEP перегенерированы (изменились только ревизия и digest-заглушки), добавлен кейс `cap_rollback_no_analysis`.
+- `policy_revision` поднята до `0.2.0` (с cap `analysis_verdict` — `0.3.0`); эталоны вердиктов PEP перегенерированы (изменились только ревизия и digest-заглушки), добавлен кейс `cap_rollback_no_analysis`.
+
+**Cap `analysis_verdict` (08.11.2026).** Если анализ текущей ревизии есть, но его вердикт не подтверждает причину отката, откат тоже понижается до **L1**. Подтверждающие пары — `canary_degradation` и `bake_degradation` при `degradation`, `insufficient_data_policy` при `inconclusive` (`rollback_supported_by` в `guards.rego`). Всё остальное (`error`, `running`, `success`, пустой вердикт, перекрёстные пары, причина `null`) — решает человек. Для этого вердикт анализа добавлен в `step.TargetState` (`rollout.analysis_verdict`; заполняют `intake.TargetStateOf` и `step.StateFromGoldenInput`), а Go передаёт в политику `input.target.analysis_verdict` и параметры модели `input.action.params` (оба пути обязательны, иначе `input_invalid`). При пустом анализе срабатывает только `analysis_missing`. На golden-наборах: все допустимые откаты v4 проходят без cap; в v5 понижаются 10 / 2 отката `crashloop_analysis_error` (RB-004 при `error`), как и `crashloop_no_current_analysis`. Перебор всех причин отката из enum по каждому кейсу с анализом даёт cap ровно при неподтверждающем вердикте и ни одного `deny` (`TestGoldenSetPEP`); среди 3107 эталонных ответов v2–v4 откатов с неподтверждающим вердиктом нет.
 
 ### 16.3 Промпт v5
 
@@ -435,7 +437,7 @@ python3 score.py --cases data/probe-v5.jsonl --pred <прогон v5> --ref <э�
 Открытые вопросы:
 
 1. Intake отдаёт `error` уже сейчас, при активном промпте v4 (shadow L0). Промпт v4 про `error` не знает; это безопаснее прежнего ложного `degradation`, но поведение модели на новом значении не проверено до переключения.
-2. PEP не страхует откат при вердикте `error` (имя анализа есть, `analysis_missing` не срабатывает). Нужен вердикт анализа в `step.TargetState`; отдельная задача.
+2. ~~PEP не страхует откат при вердикте `error`~~ — закрыто cap `analysis_verdict` (§16.2). Остаётся: при `inconclusive` PEP не знает `service.insufficient_data_policy`, поэтому откат `insufficient_data_policy` при политике `hold`/`human` проходит PEP (защита — промпт); для закрытия нужна политика сервиса в `TargetState`.
 3. Семантику Argo `Error` при Progressing нужно проверить на живом кластере.
 4. threshold-форма Argo `Inconclusive` не покрыта набором.
 5. Проба дороже на 6,7%; калибровка v5 — с нуля при переключении (freeze сдвигается).

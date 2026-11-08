@@ -183,6 +183,34 @@ func (c goldenCase) noAnalysis(typ string) bool {
 	return ar == ""
 }
 
+// rollbackSupportedBy — вердикт анализа, подтверждающий причину отката (зеркало rollback_supported_by в guards.rego).
+var rollbackSupportedBy = map[string]string{"canary_degradation": "degradation", "bake_degradation": "degradation", "insufficient_data_policy": "inconclusive"}
+
+// verdictUnsupported — откат при непустом анализе, вердикт которого не подтверждает причину: PEP понижает его до L1.
+func (c goldenCase) verdictUnsupported(p pep.Proposal) bool {
+	if p.Type != "rollout.abort_and_rollback" || c.noAnalysis(p.Type) {
+		return false
+	}
+	verdict := ""
+	if c.state.Rollout != nil {
+		verdict = c.state.Rollout.AnalysisVerdict
+	}
+	return p.Params.Reason == nil || rollbackSupportedBy[*p.Params.Reason] != verdict
+}
+
+// requireCap проверяет понижение отката: downgrade, L1, указанный cap, ни одного deny.
+func requireCap(v pep.Verdict, code string) string {
+	for _, r := range v.Reasons {
+		if r.Effect == "deny" {
+			return "есть deny: " + r.Code
+		}
+	}
+	if v.Decision != "downgrade" || v.EffectiveLevel != "L1" || !hasReason(v.Reasons, "cap:"+code) {
+		return "вердикт " + v.Decision + "/" + v.EffectiveLevel + ", ожидалось downgrade/L1 с cap " + code
+	}
+	return ""
+}
+
 // requireAnalysisMissing проверяет вердикт отката без анализа: downgrade, L1, cap analysis_missing, ни одного deny.
 func requireAnalysisMissing(v pep.Verdict) string {
 	for _, r := range v.Reasons {
@@ -240,9 +268,10 @@ func TestGoldenSetPEP(t *testing.T) {
 		name    string
 		cases   int
 		missing int // откатов без анализа среди acceptable
-	}{{"probe", 595, 10}, {"dev", 138, 2}, {"probe-staged", 635, 10}, {"dev-staged", 147, 2}} {
+		verdict int // допустимых откатов, где вердикт анализа не подтверждает причину (crashloop при error)
+	}{{"probe", 595, 10, 0}, {"dev", 138, 2, 0}, {"probe-staged", 635, 10, 10}, {"dev-staged", 147, 2, 2}} {
 		t.Run(set.name, func(t *testing.T) {
-			bad, checked, unavailable, missing := 0, 0, 0, 0
+			bad, checked, unavailable, missing, verdict, capped := 0, 0, 0, 0, 0, 0
 			fail := func(format string, a ...any) {
 				if bad++; bad <= 20 {
 					t.Errorf(format, a...)
@@ -268,6 +297,13 @@ func TestGoldenSetPEP(t *testing.T) {
 						}
 					} else if hasReason(v.Reasons, "cap:analysis_missing") {
 						fail("%s: analysis_missing при непустом анализе: %+v", c.ID, v.Reasons)
+					} else if c.verdictUnsupported(p) {
+						verdict++
+						if msg := requireCap(v, "analysis_verdict"); msg != "" {
+							fail("%s: откат при вердикте без подтверждения: %s %+v", c.ID, msg, v.Reasons)
+						}
+					} else if hasReason(v.Reasons, "cap:analysis_verdict") {
+						fail("%s: analysis_verdict при подтверждающем вердикте: %+v", c.ID, v.Reasons)
 					}
 					want, _ := c.allowed(acc.Type)["computed"].(map[string]any)
 					gotB, _ := json.Marshal(v.Action.Computed)
@@ -278,6 +314,25 @@ func TestGoldenSetPEP(t *testing.T) {
 					}
 					if !reflect.DeepEqual(got, want) {
 						fail("%s: computed %s, в наборе %v", c.ID, gotB, want)
+					}
+				}
+				// Любая причина отката из enum: cap analysis_verdict ровно тогда, когда вердикт её не подтверждает.
+				if a := c.allowed("rollout.abort_and_rollback"); a != nil && !c.noAnalysis("rollout.abort_and_rollback") {
+					params, _ := a["params"].(map[string]any)
+					rc, _ := params["reason"].(map[string]any)
+					enum, _ := rc["enum"].([]any)
+					for _, r := range enum {
+						reason := r.(string)
+						p := pep.Proposal{Type: "rollout.abort_and_rollback", Params: pep.ModelParams{Reason: &reason}}
+						v := eng.Evaluate(context.Background(), p, ctx)
+						if c.verdictUnsupported(p) {
+							capped++
+							if msg := requireCap(v, "analysis_verdict"); msg != "" {
+								fail("%s: откат %s: %s %+v", c.ID, reason, msg, v.Reasons)
+							}
+						} else if v.Decision != "allow" {
+							fail("%s: откат %s при подтверждающем вердикте: %s %+v", c.ID, reason, v.Decision, v.Reasons)
+						}
 					}
 				}
 				for _, name := range catalogActions {
@@ -301,7 +356,14 @@ func TestGoldenSetPEP(t *testing.T) {
 			if missing != set.missing {
 				t.Errorf("откатов без анализа среди acceptable %d, ожидалось %d", missing, set.missing)
 			}
-			t.Logf("%s: acceptable=%d, недоступных проверено=%d, откатов без анализа=%d, ошибок=%d", set.name, checked, unavailable, missing, bad)
+			if verdict != set.verdict {
+				t.Errorf("допустимых откатов с неподтверждающим вердиктом %d, ожидалось %d", verdict, set.verdict)
+			}
+			if capped == 0 {
+				t.Error("ни одного отката с неподтверждающим вердиктом по enum причин: проверка ничего не покрыла")
+			}
+			t.Logf("%s: acceptable=%d, недоступных проверено=%d, откатов без анализа=%d, с неподтверждающим вердиктом=%d (по enum %d), ошибок=%d",
+				set.name, checked, unavailable, missing, verdict, capped, bad)
 		})
 	}
 }
@@ -323,7 +385,7 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	if len(files) == 0 {
 		t.Skip("нет refs")
 	}
-	total, missing := 0, 0
+	total, missing, verdict := 0, 0, 0
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -360,6 +422,11 @@ func TestRefAnswersNoPanic(t *testing.T) {
 				if msg := requireAnalysisMissing(v); msg != "" {
 					t.Errorf("%s: откат без анализа: %s %+v", line.ID, msg, v.Reasons)
 				}
+			} else if c.verdictUnsupported(p) {
+				verdict++
+				if msg := requireCap(v, "analysis_verdict"); msg != "" {
+					t.Errorf("%s: откат при неподтверждающем вердикте: %s %+v", line.ID, msg, v.Reasons)
+				}
 			}
 		}
 	}
@@ -370,5 +437,5 @@ func TestRefAnswersNoPanic(t *testing.T) {
 	if missing != 20 {
 		t.Errorf("откатов без анализа в ответах %d, ожидалось 20", missing)
 	}
-	t.Logf("ответов проверено: %d, откатов без анализа: %d", total, missing)
+	t.Logf("ответов проверено: %d, откатов без анализа: %d, при неподтверждающем вердикте: %d", total, missing, verdict)
 }

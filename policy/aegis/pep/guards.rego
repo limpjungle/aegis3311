@@ -9,9 +9,9 @@ forbidden_namespaces := {"kube-system", "aegisops-system"}
 # Обязательные поля входа; отсутствие любого — deny (fail-closed).
 required_paths := [
 	["action", "type"], ["action", "reversibility"], ["action", "lease"],
-	["action", "error_budget_exhausted"], ["action", "degraded_mode"], ["action", "computed"],
+	["action", "error_budget_exhausted"], ["action", "degraded_mode"], ["action", "computed"], ["action", "params"],
 	["action", "rate_limit", "per_target_per_hour"], ["action", "rate_limit", "cooldown_seconds"],
-	["target", "environment"], ["target", "namespace"], ["target", "namespace_labels"],
+	["target", "environment"], ["target", "namespace"], ["target", "namespace_labels"], ["target", "analysis_verdict"],
 	["level", "granted"], ["level", "by_data"],
 	["flags", "kill_switch", "global"], ["flags", "kill_switch", "cluster"], ["flags", "kill_switch", "actions"],
 	["flags", "liveness_confirmed"], ["flags", "error_budget_exhausted"], ["flags", "degraded_mode"],
@@ -149,6 +149,28 @@ analysis_run_present if {
 	v := object.get(input, ["action", "computed", "analysis_run"], "")
 	is_string(v)
 	v != ""
+}
+
+# Вердикт анализа, который подтверждает причину отката. Остальные сочетания (error, running, success, inconclusive при
+# canary/bake_degradation, degradation при insufficient_data_policy, неизвестная причина) — откат решает человек.
+rollback_supported_by := {
+	"canary_degradation": "degradation",
+	"bake_degradation": "degradation",
+	"insufficient_data_policy": "inconclusive",
+}
+
+caps contains {"code": "analysis_verdict", "level": "L1", "detail": sprintf("вердикт анализа %q не подтверждает откат с причиной %v: решает человек", [verdict, reason])} if {
+	action_type == "rollout.abort_and_rollback"
+	analysis_run_present
+	not rollback_verdict_supported
+	verdict := object.get(input, ["target", "analysis_verdict"], "")
+	reason := object.get(input, ["action", "params", "reason"], null)
+}
+
+rollback_verdict_supported if {
+	reason := object.get(input, ["action", "params", "reason"], null)
+	is_string(reason)
+	object.get(input, ["target", "analysis_verdict"], "") == rollback_supported_by[reason]
 }
 
 caps contains {"code": "human_engaged", "level": "L1", "detail": "человек взял инцидент"} if {

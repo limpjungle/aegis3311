@@ -222,8 +222,52 @@ test_rollback_without_analysis_capped if {
 	}
 }
 
+# Откат с анализом: причина и вердикт текущего анализа.
+rollback_with(reason, verdict) := patched(array.concat(
+	as_action("rollout.abort_and_rollback", "R1", "allowed", "allowed"),
+	[["/action/computed", {"analysis_run": "ar-1"}], ["/action/params/reason", reason], ["/target/analysis_verdict", verdict]],
+))
+
 test_rollback_with_analysis_not_capped if {
-	cap_codes(rollback({"analysis_run": "ar-1"})) == set()
+	every rv in [["canary_degradation", "degradation"], ["bake_degradation", "degradation"], ["insufficient_data_policy", "inconclusive"]] {
+		inp := rollback_with(rv[0], rv[1])
+		cap_codes(inp) == set()
+		deny_codes(inp) == set()
+	}
+}
+
+# Вердикт не подтверждает причину отката: error, running, success, пусто, перекрёстные сочетания, причина null.
+test_rollback_verdict_not_supporting_capped if {
+	every rv in [
+		["canary_degradation", "error"], ["canary_degradation", "running"], ["canary_degradation", "success"],
+		["canary_degradation", "inconclusive"], ["canary_degradation", ""], ["bake_degradation", "error"],
+		["insufficient_data_policy", "degradation"], ["insufficient_data_policy", "error"], [null, "degradation"],
+	] {
+		inp := rollback_with(rv[0], rv[1])
+		cap_codes(inp) == {"analysis_verdict"}
+		effective(inp) == "L1"
+		deny_codes(inp) == set()
+	}
+}
+
+# Нет анализа — только analysis_missing, без второго cap.
+test_rollback_without_analysis_single_cap if {
+	inp := patched(array.concat(
+		as_action("rollout.abort_and_rollback", "R1", "allowed", "allowed"),
+		[["/action/computed", {"analysis_run": ""}], ["/action/params/reason", "canary_degradation"], ["/target/analysis_verdict", ""]],
+	))
+	cap_codes(inp) == {"analysis_missing"}
+}
+
+test_analysis_verdict_only_rollback if {
+	cap_codes(patched([["/target/analysis_verdict", "error"]])) == set()
+}
+
+test_missing_verdict_or_params_denied if {
+	every p in [["/target/analysis_verdict"], ["/action/params"]] {
+		inp := json.remove(base, p)
+		"input_invalid" in deny_codes(inp)
+	}
 }
 
 test_analysis_missing_only_rollback if {

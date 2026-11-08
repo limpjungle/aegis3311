@@ -220,3 +220,38 @@ func TestGoldenSetCrossCheck(t *testing.T) {
 		})
 	}
 }
+
+// TestGoldenAnalysisVerdict: вердикт анализа текущей ревизии переносится в TargetState ровно тогда, когда есть анализ.
+func TestGoldenAnalysisVerdict(t *testing.T) {
+	known := map[string]bool{"success": true, "degradation": true, "inconclusive": true, "error": true, "running": true}
+	for _, set := range []struct {
+		name  string
+		cases int
+	}{{"probe", 595}, {"probe-staged", 635}} {
+		t.Run(set.name, func(t *testing.T) {
+			seen := map[string]int{}
+			for _, c := range readGolden(t, set.name, set.cases) {
+				s, err := StateFromGoldenInput(c.RawInput)
+				if err != nil {
+					t.Fatalf("%s: %v", c.ID, err)
+				}
+				if s.Rollout == nil {
+					continue
+				}
+				if (s.Rollout.AnalysisRun == "") != (s.Rollout.AnalysisVerdict == "") {
+					t.Errorf("%s: analysis_run %q, verdict %q", c.ID, s.Rollout.AnalysisRun, s.Rollout.AnalysisVerdict)
+				}
+				if v := s.Rollout.AnalysisVerdict; v != "" {
+					if !known[v] {
+						t.Errorf("%s: неизвестный вердикт %q", c.ID, v)
+					}
+					seen[v]++
+				}
+			}
+			if seen["degradation"] == 0 || seen["inconclusive"] == 0 || seen["running"] == 0 || (set.name == "probe-staged" && seen["error"] == 0) {
+				t.Errorf("покрытие вердиктов: %v", seen)
+			}
+			t.Logf("%s: %v", set.name, seen)
+		})
+	}
+}

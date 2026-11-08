@@ -3,7 +3,7 @@ package aegis.pep
 
 import data.aegis.autonomy
 
-policy_revision := "0.2.0"
+policy_revision := "0.3.0"
 
 # Нет ячейки матрицы — потолок L0 (и deny no_matrix_cell).
 default matrix_ceiling := "L0"
@@ -23,7 +23,7 @@ default decision := {
 	"effective_level": "L0",
 	"deny": [{"code": "policy_undefined", "detail": "решение политики не определено"}],
 	"caps": [],
-	"policy_revision": "0.2.0",
+	"policy_revision": "0.3.0",
 }
 
 decision := {

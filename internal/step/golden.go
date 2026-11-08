@@ -23,7 +23,8 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 			Name        *string `json:"name"`
 			Phase       string  `json:"phase"`
 			AnalysisRun *struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				Verdict string `json:"verdict"`
 			} `json:"analysis_run"`
 		} `json:"rollout"`
 		DB *DB `json:"db"`
@@ -39,7 +40,7 @@ func StateFromGoldenInput(raw json.RawMessage) (TargetState, error) {
 	if r := in.Rollout; r != nil {
 		s.Rollout = &Rollout{Name: r.Name, Phase: r.Phase}
 		if r.AnalysisRun != nil {
-			s.Rollout.AnalysisRun = r.AnalysisRun.Name
+			s.Rollout.AnalysisRun, s.Rollout.AnalysisVerdict = r.AnalysisRun.Name, r.AnalysisRun.Verdict
 		}
 	}
 	return s, nil

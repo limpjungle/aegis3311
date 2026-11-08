@@ -27,6 +27,6 @@
  "reasons": [],
  "catalog_digest": "<digest>",
  "policy_bundle_digest": "<digest>",
- "policy_revision": "0.2.0",
+ "policy_revision": "0.3.0",
  "input_digest": "<digest>"
 }

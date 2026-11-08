@@ -5,7 +5,7 @@ test_decision_always_defined_on_empty_input if {
 	d.effective_level == "L0"
 	d.ceiling == "L0"
 	count(d.deny) > 0
-	d.policy_revision == "0.2.0"
+	d.policy_revision == "0.3.0"
 }
 
 test_decision_unknown_level if {

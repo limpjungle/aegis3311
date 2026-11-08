@@ -224,10 +224,12 @@ class RunnerV4Test(unittest.TestCase):
                 calibrate.find_reference(d, PROFILES[0], MANIFEST["sets"]["probe"]["sha256"])
             ref, _ = calibrate.find_reference(d, PROFILES[0], STAGED["sets"]["probe"]["sha256"])
             self.assertTrue(ref.endswith("probe-v4-x.jsonl"))
-        # настоящие эталоны v3 по-прежнему находятся
-        calibrate.find_reference(HERE, PROFILES[0], MANIFEST["sets"]["probe"]["sha256"])
-        with self.assertRaises(calibrate.NoReference):
-            calibrate.find_reference(HERE, PROFILES[0], STAGED["sets"]["probe"]["sha256"])
+        # в репозитории: по хешу активного набора находится эталон v3, а не записанный рядом эталон v4 (08.11.2026)
+        for p in PROFILES:
+            ref, _ = calibrate.find_reference(HERE, p, MANIFEST["sets"]["probe"]["sha256"])
+            self.assertIn(os.sep + "probe-v3-", ref)
+            ref, _ = calibrate.find_reference(HERE, p, STAGED["sets"]["probe"]["sha256"])
+            self.assertIn(os.sep + "probe-v4-", ref)
 
 
 class ScoreV4Test(unittest.TestCase):

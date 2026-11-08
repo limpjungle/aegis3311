@@ -96,6 +96,72 @@ func TestEvaluate_Table(t *testing.T) {
 		{name: "restart scope вне enum", typ: "workload.restart", params: params(sp("node"), nil, nil, nil), want: "deny", level: "L0", codes: []string{"deny:param_not_in_enum"}},
 		{name: "rollout reason вне enum", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("bogus"), nil), want: "deny", level: "L0", codes: []string{"deny:param_not_in_enum"}},
 		{name: "rollout ok", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "allow", level: "L3", exact: true},
+		{name: "rollout без анализа", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_missing"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = "" }},
+		{name: "rollout без анализа в Bake", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_missing"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.Phase = "Bake"; c.State.Rollout.AnalysisRun = "" }},
+		{name: "rollout без анализа, insufficient_data_policy", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_missing"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = "" }},
+		{name: "rollout без анализа, запрошен L0", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "noop", level: "L0",
+			codes: []string{"cap:analysis_missing"}, mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = ""; c.Level.Level = sp("L0") }},
+		{name: "rollout bake_degradation ok", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("bake_degradation"), nil), want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.Rollout.Phase = "Bake" }},
+		{name: "rollout insufficient_data_policy при inconclusive", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "inconclusive" }},
+		{name: "rollout idp, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("hold")
+			}},
+		{name: "rollout idp, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("human")
+			}},
+		{name: "rollout idp, политика не задана", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = nil
+			}},
+		{name: "rollout idp, неизвестная политика", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("yolo")
+			}},
+		{name: "rollout idp при degradation, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold", "cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout idp без анализа, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_missing", "cap:insufficient_data_policy"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = ""; c.State.InsufficientDataPolicy = sp("human") }},
+		{name: "rollout canary_degradation, политика hold", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "allow", level: "L3",
+			codes: []string{}, exact: true, mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout bake_degradation, политика human", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("bake_degradation"), nil), want: "allow", level: "L3",
+			codes: []string{}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.Phase = "Bake"; c.State.InsufficientDataPolicy = sp("human") }},
+		{name: "scale_out, политика hold", typ: "workload.scale_out", want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.InsufficientDataPolicy = sp("hold") }},
+		{name: "rollout idp, политика hold, запрошен L0", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "deny", level: "L0",
+			codes: []string{"deny:insufficient_data_hold"}, mut: func(c *pep.Context) {
+				c.State.Rollout.AnalysisVerdict = "inconclusive"
+				c.State.InsufficientDataPolicy = sp("hold")
+				c.Level.Level = sp("L0")
+			}},
+		{name: "rollout при вердикте error", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "error" }},
+		{name: "rollout при вердикте running", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "running" }},
+		{name: "rollout при вердикте success", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "success" }},
+		{name: "rollout canary_degradation при inconclusive", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "inconclusive" }},
+		{name: "rollout insufficient_data_policy при degradation", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("insufficient_data_policy"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true},
+		{name: "rollout без вердикта", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "downgrade", level: "L1",
+			codes: []string{"cap:analysis_verdict"}, exact: true, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "" }},
+		{name: "rollout при error, запрошен L0", typ: "rollout.abort_and_rollback", params: params(nil, nil, sp("canary_degradation"), nil), want: "noop", level: "L0",
+			codes: []string{"cap:analysis_verdict"}, mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "error"; c.Level.Level = sp("L0") }},
+		{name: "scale_out при вердикте error", typ: "workload.scale_out", want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.Rollout.AnalysisVerdict = "error" }},
+		{name: "scale_out без анализа", typ: "workload.scale_out", want: "allow", level: "L3", exact: true,
+			mut: func(c *pep.Context) { c.State.Rollout.AnalysisRun = "" }},
 		{name: "scale_out с лишним scope", typ: "workload.scale_out", params: params(sp("pod"), nil, nil, nil), want: "deny", level: "L0", codes: []string{"deny:param_unexpected"}},
 		{name: "postgres shared_buffers", typ: "postgres.set_restart_param", params: params(nil, nil, nil, sp("shared_buffers")), want: "downgrade", level: "L1",
 			codes: []string{"cap:recommendation_only", "cap:reversibility_r3", "cap:matrix_ceiling"}, exact: true},
@@ -165,8 +231,12 @@ func TestEvaluate_Table(t *testing.T) {
 			mut: func(c *pep.Context) { c.Flags.PolicyCacheExpired = bp(true) }},
 		{name: "deny перекрывает cap", typ: "workload.scale_out", want: "deny", level: "L0", codes: []string{"deny:forbidden_namespace", "cap:human_engaged"},
 			mut: func(c *pep.Context) { c.Namespace = sp("kube-system"); c.Flags.HumanEngaged = bp(true) }},
-		{name: "запрошен L0", typ: "workload.scale_out", want: "allow", level: "L0", exact: true,
+		{name: "запрошен L0", typ: "workload.scale_out", want: "noop", level: "L0", exact: true,
 			mut: func(c *pep.Context) { c.Level.Level = sp("L0") }},
+		{name: "запрошен L0 + human_engaged", typ: "workload.scale_out", want: "noop", level: "L0", codes: []string{"cap:human_engaged"}, exact: true,
+			mut: func(c *pep.Context) { c.Level.Level = sp("L0"); c.Flags.HumanEngaged = bp(true) }},
+		{name: "запрошен L0 + kube-system", typ: "workload.scale_out", want: "deny", level: "L0", codes: []string{"deny:forbidden_namespace"},
+			mut: func(c *pep.Context) { c.Level.Level = sp("L0"); c.Namespace = sp("kube-system") }},
 		{name: "запрошен L1 + cap L1", typ: "workload.scale_out", want: "allow", level: "L1",
 			mut: func(c *pep.Context) { c.Level.Level = sp("L1"); c.Flags.HumanEngaged = bp(true) }},
 	}
@@ -199,6 +269,10 @@ func TestEvaluate_Table(t *testing.T) {
 			}
 			if v.Reasons == nil {
 				t.Error("Reasons == nil")
+			}
+			// would-be нарушение G0 — только deny: у не-deny вердикта причин deny быть не должно (решение 07.11.2026).
+			if c.want != "deny" && hasDenyReason(v.Reasons) {
+				t.Errorf("%s вердикт содержит причину deny: %+v", v.Decision, v.Reasons)
 			}
 		})
 	}

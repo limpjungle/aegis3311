@@ -12,6 +12,13 @@ import (
 	"strings"
 )
 
+// UnknownFieldError — в JSON есть поле, которого нет в типе. Отличает «запись новее сборки» от прочих нарушений формата.
+type UnknownFieldError struct{ Field string }
+
+func (e *UnknownFieldError) Error() string {
+	return fmt.Sprintf("неизвестное поле %q (имена регистрозависимы)", e.Field)
+}
+
 // Decode разбирает ровно одно JSON-значение b в v (указатель).
 func Decode(b []byte, v any) error {
 	if !json.Valid(b) {
@@ -105,7 +112,7 @@ func walk(dec *json.Decoder, t reflect.Type) error {
 			if known != nil {
 				var found bool
 				if ft, found = known[key]; !found {
-					return fmt.Errorf("неизвестное поле %q (имена регистрозависимы)", key)
+					return &UnknownFieldError{Field: key}
 				}
 			}
 			if err := walk(dec, ft); err != nil {

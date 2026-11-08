@@ -1,7 +1,7 @@
 # Политики OPA/Rego
 
 - `aegis/autonomy/matrix.rego` — матрица автономности (architecture.md §4.4), запрещённые имена действий, самопроверка инвариантов (prod не выше staging, R3 не выше L1);
-- `aegis/pep/guards.rego` — запреты (`deny`) и понижения уровня (`caps`): kill switch, подтверждение «не остановлен», error budget, деградационный режим, lease, человек в инциденте, circuit breaker, rate limit, cooldown;
+- `aegis/pep/guards.rego` — запреты (`deny`) и понижения уровня (`caps`): kill switch, подтверждение «не остановлен», error budget, деградационный режим, lease, откат без анализа текущей ревизии (`analysis_missing`, L1) и при вердикте анализа, не подтверждающем причину отката (`analysis_verdict`, L1), откат с причиной `insufficient_data_policy` по политике сервиса (`insufficient_data_hold` — deny при `hold`, `insufficient_data_policy` — L1 при `human`/не задана), человек в инциденте, circuit breaker, rate limit, cooldown;
 - `aegis/pep/decision.rego` — итог `data.aegis.pep.decision`: определён всегда, при любой аномалии входа — `deny` и `L0`.
 
 Форма и величина действия (каталог, границы, цель) проверяются в Go; политика получает нужные поля каталога во входе и не дублирует арифметику.
@@ -23,3 +23,16 @@ go run github.com/open-policy-agent/opa@v1.22.2 check --strict policy
 ```
 go run ./cmd/aegis-pep dry-run < {"proposal": <action из ответа v2>, "context": {...}}
 ```
+
+### Вердикт dry-run (`aegisops/pep-verdict/v1`)
+
+| Решение | Когда |
+| --- | --- |
+| `deny` | есть хотя бы одна причина deny; эффективный уровень L0. Deny перекрывает всё, включая caps |
+| `noop` | recommend/none либо действие каталога без deny с эффективным L0 (например, запрошен L0): исполнять нечего; caps остаются в `reasons` |
+| `allow` | эффективный уровень равен запрошенному и выше L0 |
+| `downgrade` | L0 < эффективный уровень < запрошенного |
+
+Два вида `noop` различаются по `action.type`: `recommend`/`none` либо действие каталога. У L0-варианта заполнены `action.version`, `computed`, `target`, `ceiling`. Noop при эффективном L0 — решение 07.11.2026, утверждено; строка схемы вердикта не менялась.
+
+Would-be нарушение (G0) до появления lease (MVP-B) — только вердикт `deny`: `downgrade` (в том числе из-за `lease_missing`) и `noop` нарушениями не считаются (решение 07.11.2026, утверждено). Подсчёт механический: `decision == "deny"`; причины понижения видны в `reasons[]` (`effect: cap`). Правило пересматривается при вводе lease в MVP-B.

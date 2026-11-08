@@ -24,7 +24,9 @@ docs/
 ├── 04-operations/
 │   ├── runbooks.md            # Каталог runbook'ов, TTL, ревалидация
 │   ├── incident-flow.md       # Жизненный цикл инцидента
-│   └── degraded-mode.md       # Деградационный режим, reconciliation
+│   ├── kill-switch-drill.md   # Runbook учения kill switch (G0)
+│   ├── degraded-mode.md       # Деградационный режим, reconciliation
+│   └── migrations.md          # Заметки о миграции (kill switch, bootstrap, формат цепочки)
 ├── 05-testing/
 │   ├── eval.md                # Eval-контур, golden-набор
 │   ├── golden-set.md          # Синтетический golden-набор (код — eval/golden-synthetic/)

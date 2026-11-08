@@ -10,12 +10,16 @@ base := {
 		"error_budget_exhausted": "allowed",
 		"degraded_mode": "allowed",
 		"rate_limit": {"per_target_per_hour": 4, "cooldown_seconds": 600},
+		"computed": {},
+		"params": {"scope": null, "pod_name": null, "reason": null, "parameter": null},
 	},
 	"target": {
 		"environment": "staging",
 		"namespace": "shop",
 		"namespace_labels": {"aegisops.io/managed": "true"},
 		"kind": "autoscaling/HorizontalPodAutoscaler",
+		"analysis_verdict": "",
+		"insufficient_data_policy": "",
 	},
 	"level": {"granted": "L3", "by_data": false},
 	"flags": {

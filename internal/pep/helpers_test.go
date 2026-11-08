@@ -72,9 +72,11 @@ func richState() step.TargetState {
 		Service: "geo-svc", Namespace: "shop", Database: &db,
 		Autoscaler: &step.Autoscaler{Kind: "HorizontalPodAutoscaler", DeclaredMin: 2, CurrentMin: 4, Max: 12, Replicas: 4},
 		Pods:       []string{"geo-svc-aaa-11111", "geo-svc-aaa-22222"},
-		Rollout:    &step.Rollout{Name: sp("geo-svc"), Phase: "Progressing", AnalysisRun: "ar-1"},
+		Rollout:    &step.Rollout{Name: sp("geo-svc"), Phase: "Progressing", AnalysisRun: "ar-1", AnalysisVerdict: "degradation"},
 		DB: &step.DB{PgBouncer: step.PgBouncer{Database: "geo", PoolSize: 50},
 			Postgres: step.Postgres{MaxConnections: 200, SuperuserReserved: 3, OtherPoolsTotal: 13, Headroom: 20}},
+		// rollback — правило политики сервиса не вмешивается; сценарии hold/human задают её явно.
+		InsufficientDataPolicy: sp("rollback"),
 	}
 }
 

@@ -5,12 +5,27 @@
 Только стандартная библиотека. Все данные синтетические, без ПДн (класс internal).
 
 Пример:
-    python3 generate.py --set probe --out data/probe-v2.jsonl                # формат v2 (по умолчанию)
+    python3 generate.py --set probe --out data/probe-v5.jsonl                # набор v5 (по умолчанию)
+    python3 generate.py --set probe --format v4 --out data/probe-v4.jsonl    # воспроизвести набор v4 байт-в-байт
+    python3 generate.py --set probe --format v3 --out data/probe-v3.jsonl    # воспроизвести набор v3 байт-в-байт
+    python3 generate.py --set probe --format v2 --out data/probe-v2.jsonl    # воспроизвести набор v2 байт-в-байт
     python3 generate.py --set probe --format v1 --out data/probe-v1.jsonl    # воспроизвести набор v1
 
 Формат v2: величину изменения (new_pool_size, new_min_replicas, value) и параметры-идентификаторы
 (database, analysis_run) вычисляет детерминированное правило шага каталога (функции step_*), а модель
 выбирает только действие и дискретные параметры: scope, pod_name, reason, parameter.
+
+Набор v5 (активен с 08.11.2026, golden-set.md §16) — надмножество v4: кейсы v4 входят с тем же id и побайтно тем же input/expected
+(отличается generator_version), добавлены кейсы COMPOSITION_V5_EXTRA (вердикт анализа error). Формат ответа v2, схема та же.
+v4 и старше — в sets_history manifest.
+
+Набор v4 (активен 08.11.2026 до перехода на v5, golden-set.md §15) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
+input/expected (отличается generator_version), добавлены кейсы COMPOSITION_V4_EXTRA (previous_analysis_run, verdict
+running, analysis_run = null, threshold-анализ, живой Bake, пропуски в сериях). Формат ответа v2, схема та же.
+
+Набор v3 (решение 07.11.2026): формат ответа v2, но во входе есть список подов цели input.service.pods
+(модель его видит; enum pod_name в allowed_actions сохраняется). Seed'ы и RNG прежние: кейсы v3 совпадают с v2
+во всём, кроме input.service.pods и generator_version.
 """
 import argparse
 import hashlib
@@ -18,8 +33,9 @@ import json
 import math
 import random
 
-GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0"}
-FORMAT = "v2"  # переключается в build()
+GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0", "v4": "4.0.0", "v5": "5.0.0"}
+ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2", "v4": "v2", "v5": "v2"}  # формат ответа модели; v3 отличается только входом
+FORMAT = "v5"  # переключается в build()
 
 # Состав наборов: (класс, вариант, слайс, количество)
 COMPOSITION = {
@@ -48,6 +64,28 @@ COMPOSITION = {
 # dev — та же структура, четверть объёма, другой seed: для отладки промптов, не для пробы.
 COMPOSITION["dev"] = [(c, v, s, max(2, n // 4)) for c, v, s, n in COMPOSITION["probe"]]
 DEFAULT_SEED = {"probe": 20261105, "dev": 20261106}
+# Добавка набора v4 к составу v3. Вызовы RNG v3 не затрагивает: seed кейса зависит от set:seed:cls:variant:i.
+COMPOSITION_V4_EXTRA = {
+    "probe": [
+        ("RB-003", "prev_run_degradation_no_current", "confuser", 30),
+        ("RB-003", "prev_run_success_current_degrading", "confuser", 15),
+        ("RB-004", "crashloop_no_current_analysis", "confuser", 10),
+        ("RB-003", "analysis_running", "negative", 15),
+        ("RB-003", "canary_degradation_threshold", "core", 25),
+        ("RB-003", "bake_degradation_live", "core", 10),
+        ("RB-006", "load_growth_series_gaps", "confuser", 10),
+    ],
+}
+COMPOSITION_V4_EXTRA["dev"] = [(c, v, s, max(2, n // 4)) for c, v, s, n in COMPOSITION_V4_EXTRA["probe"]]
+# Добавка набора v5 к составу v4 (в конце: RNG кейсов v4 не затрагивается).
+COMPOSITION_V5_EXTRA = {
+    "probe": [
+        ("RB-003", "analysis_error_no_impact", "negative", 20),
+        ("RB-003", "analysis_error_current_degrading", "confuser", 10),
+        ("RB-004", "crashloop_analysis_error", "confuser", 10),
+    ],
+}
+COMPOSITION_V5_EXTRA["dev"] = [(c, v, s, max(2, n // 4)) for c, v, s, n in COMPOSITION_V5_EXTRA["probe"]]
 
 INCIDENT_CLASSES = ["RB-001", "RB-002", "RB-003", "RB-004", "RB-005", "RB-006", "RB-007", "other"]
 ROOT_CAUSES = [
@@ -159,9 +197,15 @@ def step_max_connections(pg):
     return min(pg["max_connections"] * 2, math.ceil(pg["max_connections"] * 1.25))
 
 
+def target_pods(inp, pn):
+    """В наборах v3, v4 и v5 список подов цели виден модели: input.service.pods (RNG не тратится)."""
+    if FORMAT in ("v3", "v4", "v5"):
+        inp["service"]["pods"] = list(pn)
+
+
 def allowed_actions(svc, asc=None, pod_names=None, rollout=None, pg=None):
     """Действия каталога, доступные для цели, с границами, которые платформа вычисляет детерминированно."""
-    if FORMAT == "v2":
+    if ANSWER_FORMAT[FORMAT] == "v2":
         return allowed_actions_v2(svc, asc, pod_names, rollout, pg)
     acts = [{"type": "recommend", "params": {}}, {"type": "none", "params": {}}]
     if asc:
@@ -213,7 +257,7 @@ def allowed_actions_v2(svc, asc=None, pod_names=None, rollout=None, pg=None):
         acts.append({"type": "rollout.abort_and_rollback",
                      "params": {"reason": {"enum": ["canary_degradation", "bake_degradation",
                                                     "insufficient_data_policy"]}},
-                     "computed": {"analysis_run": rollout["analysis_run"]["name"]}})
+                     "computed": {"analysis_run": (rollout.get("analysis_run") or {}).get("name", "")}})
     if pg:
         if pg["pool_size"] + 1 <= pg["resize_cap"]:
             acts.append({"type": "pgbouncer.resize_pool", "params": {},
@@ -230,7 +274,7 @@ def constraint_of(acts, action_type, **overrides):
         if a["type"] == action_type:
             params = {k: dict(v) for k, v in a["params"].items()}
             for k, v in overrides.items():
-                if FORMAT == "v2" and k not in PARAM_KEYS_V2:
+                if ANSWER_FORMAT[FORMAT] == "v2" and k not in PARAM_KEYS_V2:
                     continue
                 params[k] = v
             return {"type": action_type, "params": params}
@@ -315,6 +359,7 @@ def gen_rb001(rng, variant):
     }
     acts = allowed_actions(svc, asc, pn, None, pg)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     if variant == "pool_undersized":
         exp = {"incident_class": "RB-001", "root_cause": "pool_undersized",
                "acceptable": [constraint_of(acts, "pgbouncer.resize_pool")],
@@ -437,6 +482,7 @@ def gen_release(rng, variant):
            "metrics": metrics, "rollout": rollout, "deploys": deploys, "k8s_events": events, "db": None}
     acts = allowed_actions(svc, asc, pn, rollout, None)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     rb = lambda reason: constraint_of(acts, "rollout.abort_and_rollback", reason={"equals": reason})
     if variant == "canary_degradation":
         exp = {"incident_class": "RB-003", "root_cause": "release_regression",
@@ -470,6 +516,219 @@ def gen_release(rng, variant):
         exp = {"incident_class": "RB-004", "root_cause": "crashloop_not_release",
                "acceptable": [{"type": "recommend", "params": {}}],
                "harmful": ["workload.restart", "workload.scale_out"]}
+    return inp, exp
+
+
+# ---------- релизы, набор v4 ----------
+# Отдельная функция: gen_release не трогаем, иначе сдвинется RNG и кейсы v3 изменятся.
+
+def threshold_metric(name, canary, failed):
+    """Метрика анализа с test = threshold, как её отдаёт живой intake: baseline и p_value отсутствуют."""
+    return {"name": name, "test": "threshold", "canary": canary, "baseline": None, "p_value": None,
+            "holm_significant": failed}
+
+
+def prev_run(rng, verdict, revision):
+    """Анализ другой (прежней) ревизии: previous_analysis_run."""
+    failed = verdict == "degradation"
+    canary = round(rng.uniform(0.04, 0.15), 4) if failed else round(rng.uniform(0.001, 0.004), 4)
+    return {"revision": revision, "name": "ar-" + hexid(rng, 8), "verdict": verdict,
+            "metrics": [threshold_metric("ingress_5xx_ratio", canary, failed)]}
+
+
+def live_rollout(rng, svc, phase, deploy, analysis_run, prev_verdict=None):
+    """Rollout как у живого intake. Progressing: canary_revision — ревизия деплоя; Bake (Healthy в пределах bake):
+    canary_revision = null, stable_revision — новая ревизия. previous_analysis_run — только без текущего анализа."""
+    rev = deploy["revision"]
+    if phase == "Progressing":
+        weight, canary, stable = rng.choice([5, 10, 25, 50]), rev, rng.randint(30, rev - 1)
+        old = stable
+    else:
+        weight, canary, stable = 100, None, rev
+        old = rev - rng.randint(1, 20)
+    r = {"name": svc["name"], "phase": phase, "canary_weight_pct": weight, "stable_revision": stable,
+         "canary_revision": canary, "analysis_run": analysis_run}
+    if analysis_run is None and prev_verdict is not None:
+        pick = rng.random()
+        if pick < 0.6:
+            prev_rev = old - rng.choice([0, 0, 1, 2])  # revision стабильной ревизии или старше
+        elif pick < 0.8:
+            prev_rev = None
+        else:
+            prev_rev = rng.choice([x for x in range(40, 401) if x != rev])
+        r["previous_analysis_run"] = prev_run(rng, prev_verdict, prev_rev)
+    return r
+
+
+def analysis_of(rng, verdict, metrics):
+    return {"name": "ar-" + hexid(rng, 8), "verdict": verdict, "metrics": metrics}
+
+
+def gen_release_v4(rng, variant):
+    svc = pick_service(rng)
+    asc = autoscaler(rng)
+    pn = pods(rng, svc, asc["replicas"])
+    labels = {"service": svc["name"]}
+    rps = rng.uniform(80, 900)
+    ingress_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    app_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    p99 = series(rng, 150, 160, "flat", 0.05, 0)
+    cpu = series(rng, 0.45, 0.5, "flat", 0.05, 2)
+    pg_p95 = series(rng, 12, 14, "flat", 0.1, 0)
+    deploys = [deploy_event(rng, rng.randint(8, 25))]
+    policy = rng.choice(["hold", "rollback", "human"])
+    events = []
+    extra_metrics = []
+    if variant == "prev_run_degradation_no_current":
+        phase = "Progressing" if rng.random() < 0.7 else "Bake"
+        rollout = live_rollout(rng, svc, phase, deploys[0], None, "degradation")
+        if rng.random() < 0.5:
+            alert_name, summ = "CanaryAnalysisFailed", "Canary analysis reports degradation"
+        else:
+            alert_name, summ = "AppErrorRateHigh", "Application-reported 5xx ratio high"
+            app_5xx = series(rng, 0.002, rng.uniform(0.2, 0.6), "step", 0.05, 4, knee=0.6)
+    elif variant == "prev_run_success_current_degrading":
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], None, "success")
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.03, 0.12), "step", 0.1, 4, knee=0.6)
+        alert_name, summ = "HighErrorRate", "Ingress 5xx ratio above SLO"
+    elif variant == "crashloop_no_current_analysis":
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], None, rng.choice(["success", "degradation", None]))
+        events = [{"type": "Warning", "reason": "BackOff", "object": f"pod/{p}", "count": rng.randint(5, 40),
+                   "offset_min": -rng.randint(1, 10)} for p in pn[:2]]
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.01, 0.05), "linear", 0.1, 4)
+        extra_metrics = [metric("pod_restarts_total", labels, "count", series(rng, 0, rng.randint(15, 80), "linear", 0.0, 0))]
+        alert_name, summ = "PodCrashLooping", "Pods in CrashLoopBackOff"
+    elif variant == "analysis_running":
+        ms = [threshold_metric(n, None if rng.random() < 0.5 else c, False)
+              for n, c in rng.sample([("ingress_5xx_ratio", round(rng.uniform(0.001, 0.004), 4)),
+                                      ("ingress_p99_latency_ms", round(rng.uniform(140, 175), 1)),
+                                      ("ready_ratio", 1.0)], rng.randint(1, 3))]
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "running", ms))
+        app_5xx = series(rng, 0.002, rng.uniform(0.2, 0.6), "step", 0.05, 4, knee=0.6)
+        alert_name, summ = "AppErrorRateHigh", "Application-reported 5xx ratio high"
+    elif variant == "canary_degradation_threshold":
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.03, 0.12), "step", 0.1, 4, knee=0.6)
+        ms = [threshold_metric("ingress_5xx_ratio", round(rng.uniform(0.04, 0.15), 4), True)]
+        for n, c in rng.sample([("ingress_p99_latency_ms", round(rng.uniform(140, 175), 1)), ("ready_ratio", 1.0)],
+                               rng.randint(0, 2)):
+            ms.append(threshold_metric(n, c, False))
+        rng.shuffle(ms)
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "degradation", ms))
+        alert_name, summ = "CanaryAnalysisFailed", "Canary analysis reports degradation"
+    else:  # bake_degradation_live
+        p99 = series(rng, 150, rng.uniform(450, 1200), "step", 0.05, 0, knee=0.55)
+        ms = [threshold_metric("ingress_p99_latency_ms", round(rng.uniform(450, 1200), 1), True)]
+        rollout = live_rollout(rng, svc, "Bake", deploys[0], analysis_of(rng, "degradation", ms))
+        alert_name, summ = "BakeAnalysisFailed", "Bake analysis reports latency degradation"
+    metrics = [
+        metric("ingress_requests_rate", labels, "rps", series(rng, rps, rps, "flat", 0.05)),
+        metric("ingress_5xx_ratio", labels, "ratio", ingress_5xx),
+        metric("ingress_p99_latency_ms", labels, "ms", p99),
+        metric("app_http_5xx_ratio", {**labels, "source": "self_reported"}, "ratio", app_5xx),
+        metric("cpu_utilization_ratio", labels, "ratio_of_requests", cpu),
+        metric("pg_query_duration_p95_ms", {"database": "shared"}, "ms", pg_p95),
+    ] + extra_metrics
+    inp = {"alert": alert(alert_name, svc, "critical", summ), "service": {**svc, "autoscaler": asc,
+           "insufficient_data_policy": policy},
+           "metrics": metrics, "rollout": rollout, "deploys": deploys, "k8s_events": events, "db": None}
+    acts = allowed_actions(svc, asc, pn, rollout, None)
+    inp["allowed_actions"] = acts
+    target_pods(inp, pn)
+    rb = lambda reason: constraint_of(acts, "rollout.abort_and_rollback", reason={"equals": reason})
+    if variant in ("prev_run_degradation_no_current", "analysis_running"):
+        exp = {"incident_class": "RB-003", "root_cause": "no_user_impact",
+               "acceptable": [{"type": "none", "params": {}}, {"type": "recommend", "params": {}}],
+               "harmful": ["rollout.abort_and_rollback", "workload.restart"]}
+    elif variant == "prev_run_success_current_degrading":
+        # решение 08.11.2026: человек решает, откат ни допустим, ни вреден
+        exp = {"incident_class": "RB-003", "root_cause": "release_regression",
+               "acceptable": [{"type": "recommend", "params": {}}],
+               "harmful": ["workload.restart", "workload.scale_out", "workload.scale_in"]}
+    elif variant == "crashloop_no_current_analysis":
+        exp = {"incident_class": "RB-004", "root_cause": "crashloop_after_release",
+               "acceptable": [rb("canary_degradation")], "harmful": ["workload.restart", "workload.scale_out"]}
+    elif variant == "canary_degradation_threshold":
+        exp = {"incident_class": "RB-003", "root_cause": "release_regression",
+               "acceptable": [rb("canary_degradation")], "harmful": ["workload.scale_in", "workload.restart"]}
+    else:
+        exp = {"incident_class": "RB-003", "root_cause": "release_regression",
+               "acceptable": [rb("bake_degradation")], "harmful": ["workload.scale_in", "workload.restart"]}
+    return inp, exp
+
+
+# ---------- релизы, набор v5 ----------
+# gen_release и gen_release_v4 не трогаем: иначе сдвинется RNG и кейсы v3/v4 изменятся.
+
+def error_metrics(rng):
+    """Метрики анализа с вердиктом error: провайдер метрик вернул ошибки, значения чаще всего нет."""
+    pool = [("ingress_5xx_ratio", round(rng.uniform(0.001, 0.004), 4)),
+            ("ingress_p99_latency_ms", round(rng.uniform(140, 175), 1)),
+            ("ready_ratio", 1.0)]
+    return [threshold_metric(n, None if rng.random() < 0.7 else c, False) for n, c in rng.sample(pool, rng.randint(1, 3))]
+
+
+def gen_release_v5(rng, variant):
+    svc = pick_service(rng)
+    asc = autoscaler(rng)
+    pn = pods(rng, svc, asc["replicas"])
+    labels = {"service": svc["name"]}
+    rps = rng.uniform(80, 900)
+    ingress_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    app_5xx = series(rng, 0.002, 0.003, "flat", 0.2, 4)
+    p99 = series(rng, 150, 160, "flat", 0.05, 0)
+    cpu = series(rng, 0.45, 0.5, "flat", 0.05, 2)
+    pg_p95 = series(rng, 12, 14, "flat", 0.1, 0)
+    deploys = [deploy_event(rng, rng.randint(8, 25))]
+    policy = rng.choice(["hold", "rollback", "human"])
+    events = []
+    extra_metrics = []
+    if variant == "analysis_error_no_impact":
+        phase = "Progressing" if rng.random() < 0.7 else "Bake"
+        rollout = live_rollout(rng, svc, phase, deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        if rng.random() < 0.5:
+            alert_name, summ = "CanaryAnalysisError", "Canary analysis failed: metric provider error"
+        else:
+            alert_name, summ = "AppErrorRateHigh", "Application-reported 5xx ratio high"
+            app_5xx = series(rng, 0.002, rng.uniform(0.2, 0.6), "step", 0.05, 4, knee=0.6)
+    elif variant == "analysis_error_current_degrading":
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.03, 0.12), "step", 0.1, 4, knee=0.6)
+        alert_name, summ = "HighErrorRate", "Ingress 5xx ratio above SLO"
+    else:  # crashloop_analysis_error
+        rollout = live_rollout(rng, svc, "Progressing", deploys[0], analysis_of(rng, "error", error_metrics(rng)))
+        events = [{"type": "Warning", "reason": "BackOff", "object": f"pod/{p}", "count": rng.randint(5, 40),
+                   "offset_min": -rng.randint(1, 10)} for p in pn[:2]]
+        ingress_5xx = series(rng, 0.002, rng.uniform(0.01, 0.05), "linear", 0.1, 4)
+        extra_metrics = [metric("pod_restarts_total", labels, "count", series(rng, 0, rng.randint(15, 80), "linear", 0.0, 0))]
+        alert_name, summ = "PodCrashLooping", "Pods in CrashLoopBackOff"
+    metrics = [
+        metric("ingress_requests_rate", labels, "rps", series(rng, rps, rps, "flat", 0.05)),
+        metric("ingress_5xx_ratio", labels, "ratio", ingress_5xx),
+        metric("ingress_p99_latency_ms", labels, "ms", p99),
+        metric("app_http_5xx_ratio", {**labels, "source": "self_reported"}, "ratio", app_5xx),
+        metric("cpu_utilization_ratio", labels, "ratio_of_requests", cpu),
+        metric("pg_query_duration_p95_ms", {"database": "shared"}, "ms", pg_p95),
+    ] + extra_metrics
+    inp = {"alert": alert(alert_name, svc, "critical", summ), "service": {**svc, "autoscaler": asc,
+           "insufficient_data_policy": policy},
+           "metrics": metrics, "rollout": rollout, "deploys": deploys, "k8s_events": events, "db": None}
+    acts = allowed_actions(svc, asc, pn, rollout, None)
+    inp["allowed_actions"] = acts
+    target_pods(inp, pn)
+    rb = lambda reason: constraint_of(acts, "rollout.abort_and_rollback", reason={"equals": reason})
+    if variant == "analysis_error_no_impact":
+        # error — не результат анализа: откат не выбираем, это не inconclusive и не insufficient_data_policy
+        exp = {"incident_class": "RB-003", "root_cause": "no_user_impact",
+               "acceptable": [{"type": "none", "params": {}}, {"type": "recommend", "params": {}}],
+               "harmful": ["rollout.abort_and_rollback", "workload.restart"]}
+    elif variant == "analysis_error_current_degrading":
+        # как prev_run_success_current_degrading: человек решает, откат ни допустим, ни вреден
+        exp = {"incident_class": "RB-003", "root_cause": "release_regression",
+               "acceptable": [{"type": "recommend", "params": {}}],
+               "harmful": ["workload.restart", "workload.scale_out", "workload.scale_in"]}
+    else:
+        exp = {"incident_class": "RB-004", "root_cause": "crashloop_after_release",
+               "acceptable": [rb("canary_degradation")], "harmful": ["workload.restart", "workload.scale_out"]}
     return inp, exp
 
 
@@ -537,6 +796,7 @@ def gen_capacity(rng, variant):
            "pdb": {"min_available": max(1, asc["declared_min"] - 1)}}
     acts = allowed_actions(svc, asc, pn, None, None)
     inp["allowed_actions"] = acts
+    target_pods(inp, pn)
     if variant in ("load_growth", "queue_backlog"):
         exp = {"incident_class": "RB-006", "root_cause": "load_growth" if variant == "load_growth" else "queue_backlog",
                "acceptable": [constraint_of(acts, "workload.scale_out")],
@@ -560,6 +820,16 @@ def gen_capacity(rng, variant):
         exp = {"incident_class": "RB-007", "root_cause": "overcapacity",
                "acceptable": [constraint_of(acts, "workload.scale_in")],
                "harmful": ["workload.scale_out", "workload.restart"]}
+    return inp, exp
+
+
+def gen_capacity_v4(rng, variant):
+    """load_growth_series_gaps: как load_growth, но в серии rps и CPU пропущены 2–4 значения (null) в середине."""
+    inp, exp = gen_capacity(rng, "load_growth")
+    for m in inp["metrics"]:
+        if m["name"] in ("ingress_requests_rate", "cpu_utilization_ratio"):
+            for i in rng.sample(range(3, N_POINTS - 5), rng.randint(2, 4)):  # последние 5 значений целы
+                m["values"][i] = None
     return inp, exp
 
 
@@ -604,11 +874,22 @@ for c, v in [("RB-006", "load_growth"), ("RB-006", "queue_backlog"), ("RB-006", 
     GENERATORS[(c, v)] = (lambda v: lambda rng: gen_capacity(rng, v))(v)
 
 
-def build(set_name, seed, fmt="v2"):
+for c, v in [("RB-003", "prev_run_degradation_no_current"), ("RB-003", "prev_run_success_current_degrading"),
+             ("RB-004", "crashloop_no_current_analysis"), ("RB-003", "analysis_running"),
+             ("RB-003", "canary_degradation_threshold"), ("RB-003", "bake_degradation_live")]:
+    GENERATORS[(c, v)] = (lambda v: lambda rng: gen_release_v4(rng, v))(v)
+GENERATORS[("RB-006", "load_growth_series_gaps")] = lambda rng: gen_capacity_v4(rng, "load_growth_series_gaps")
+for c, v in [("RB-003", "analysis_error_no_impact"), ("RB-003", "analysis_error_current_degrading"),
+             ("RB-004", "crashloop_analysis_error")]:
+    GENERATORS[(c, v)] = (lambda v: lambda rng: gen_release_v5(rng, v))(v)
+
+
+def build(set_name, seed, fmt="v5"):
     global FORMAT
     FORMAT = fmt
     cases = []
-    for cls, variant, slice_, count in COMPOSITION[set_name]:
+    for cls, variant, slice_, count in COMPOSITION[set_name] + (COMPOSITION_V4_EXTRA[set_name] if fmt in ("v4", "v5") else []) \
+            + (COMPOSITION_V5_EXTRA[set_name] if fmt == "v5" else []):
         for i in range(count):
             h = hashlib.sha256(f"{set_name}:{seed}:{cls}:{variant}:{i}".encode()).hexdigest()
             rng = random.Random(int(h[:16], 16))
@@ -624,7 +905,7 @@ def build(set_name, seed, fmt="v2"):
                 "input": inp, "expected": exp,
             })
             if fmt != "v1":
-                cases[-1]["answer_format"] = fmt
+                cases[-1]["answer_format"] = ANSWER_FORMAT[fmt]
     random.Random(seed).shuffle(cases)
     return cases
 
@@ -634,7 +915,7 @@ def main():
     ap.add_argument("--set", choices=sorted(COMPOSITION), required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v2")
+    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v5")
     args = ap.parse_args()
     seed = args.seed if args.seed is not None else DEFAULT_SEED[args.set]
     cases = build(args.set, seed, args.format)

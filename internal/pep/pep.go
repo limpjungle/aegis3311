@@ -79,7 +79,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	if !ok {
 		deny("unknown_action", "catalog", "действия %q нет в каталоге", p.Type)
 		if len(ctxProblems) == 0 {
-			if d, err := e.pol.Eval(ctx, e.policyInput(unknownEntry(p.Type), "", c)); err == nil {
+			if d, err := e.pol.Eval(ctx, e.policyInput(unknownEntry(p.Type), "", nil, p.Params, c)); err == nil {
 				for _, r := range d.Deny {
 					if r.Code == "forbidden_action" {
 						deny(r.Code, "policy", "%s", r.Detail)
@@ -147,7 +147,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	v.Target = &TargetRef{Kind: kind, Namespace: *c.Namespace, Environment: *c.Environment}
 
 	// 8. Политика.
-	d, err := e.pol.Eval(ctx, e.policyInput(entry, kind, c))
+	d, err := e.pol.Eval(ctx, e.policyInput(entry, kind, av.Computed, p.Params, c))
 	if err != nil {
 		deny("policy_error", "policy", "%v", err)
 		return done()
@@ -161,7 +161,7 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 	}
 	rs = append(rs, goCaps...)
 
-	// 9. Слияние.
+	// 9. Слияние: effective = min(requested, политика, caps); L0 без deny → noop.
 	if hasDeny(rs) {
 		return done()
 	}
@@ -174,9 +174,13 @@ func (e *Engine) Evaluate(ctx context.Context, p Proposal, c Context) Verdict {
 		eff = minLevel(eff, r.Level)
 	}
 	v.EffectiveLevel = eff
-	v.Decision = "allow"
-	if eff != v.RequestedLevel {
+	switch {
+	case eff == "L0":
+		v.Decision = "noop" // на L0 агент ничего не исполняет; caps остаются в reasons
+	case eff != v.RequestedLevel:
 		v.Decision = "downgrade"
+	default:
+		v.Decision = "allow"
 	}
 	return done()
 }
@@ -317,7 +321,31 @@ func unknownEntry(name string) *catalog.Entry {
 }
 
 // policyInput собирает вход Rego. Контекст к этому моменту валиден (все указатели заполнены).
-func (e *Engine) policyInput(entry *catalog.Entry, kind string, c Context) map[string]any {
+// computed — вычисленные step поля действия (action.computed); nil превращается в пустой объект, не в null.
+func (e *Engine) policyInput(entry *catalog.Entry, kind string, computed map[string]any, mp ModelParams, c Context) map[string]any {
+	cp := make(map[string]any, len(computed))
+	for k, v := range computed {
+		cp[k] = v
+	}
+	// Дискретные параметры модели: null — «не используется» (как в схеме ответа v2).
+	params := map[string]any{}
+	for k, v := range map[string]*string{"scope": mp.Scope, "pod_name": mp.PodName, "reason": mp.Reason, "parameter": mp.Parameter} {
+		if v == nil {
+			params[k] = nil
+		} else {
+			params[k] = *v
+		}
+	}
+	// Вердикт анализа текущей ревизии; "" — анализа нет (или нет rollout).
+	verdict := ""
+	if r := c.State.Rollout; r != nil {
+		verdict = r.AnalysisVerdict
+	}
+	// Политика сервиса при недостатке данных canary; "" — не задана.
+	policy := ""
+	if p := c.State.InsufficientDataPolicy; p != nil {
+		policy = *p
+	}
 	f := c.Flags
 	actions := f.KillSwitch.Actions
 	if actions == nil {
@@ -329,9 +357,12 @@ func (e *Engine) policyInput(entry *catalog.Entry, kind string, c Context) map[s
 			"error_budget_exhausted": entry.ErrorBudgetExhausted, "degraded_mode": entry.DegradedMode,
 			"rate_limit": map[string]any{"per_target_per_hour": entry.RateLimit.PerTargetPerHour,
 				"cooldown_seconds": int(entry.RateLimit.Cooldown.Seconds())},
+			"computed": cp,
+			"params":   params,
 		},
 		"target": map[string]any{"environment": *c.Environment, "namespace": *c.Namespace,
-			"namespace_labels": c.NamespaceLabels, "kind": kind},
+			"namespace_labels": c.NamespaceLabels, "kind": kind, "analysis_verdict": verdict,
+			"insufficient_data_policy": policy},
 		"level": map[string]any{"granted": *c.Level.Level, "by_data": *c.Level.ByData},
 		"flags": map[string]any{
 			"kill_switch":        map[string]any{"global": *f.KillSwitch.Global, "cluster": *f.KillSwitch.Cluster, "actions": actions},

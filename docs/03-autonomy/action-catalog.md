@@ -97,6 +97,8 @@ degraded_mode: allowed                     # только если runbook пр�
 snapshot: [rollout.status, revision_history, analysis_run]
 ```
 
+Без анализа текущей ревизии (`computed.analysis_run` пуст) PEP понижает откат до L1 (cap `analysis_missing`, `policy/aegis/pep/guards.rego`): вердикта нет, откат решает человек. Если анализ есть, но его вердикт не подтверждает причину (`canary_degradation`/`bake_degradation` — только при `degradation`, `insufficient_data_policy` — только при `inconclusive`), откат тоже понижается до L1 (cap `analysis_verdict`). Вердикт анализа `error` (сбой провайдера метрик) отдельный и не `inconclusive`; в каталоге ничего не меняется (golden-set.md §16). Откат с причиной `insufficient_data_policy` подчиняется политике сервиса при недостатке данных (реестр сервисов intake): `hold` — `deny` `insufficient_data_hold`, `human` или политика не задана — L1 (cap `insufficient_data_policy`), `rollback` — без ограничений (golden-set.md §16.2).
+
 ### 2.2 `workload.scale_out` — увеличение реплик stateless (R1)
 
 ```yaml

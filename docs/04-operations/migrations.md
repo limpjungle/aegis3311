@@ -1,0 +1,39 @@
+# Заметки о миграции
+
+> Статус: Этап 0a, MVP-A. Что меняется для уже развёрнутых `aegis-intake`, `aegis-llmrouter`, `aegis-audit` и `aegis-killswitch` при переходе на сборку с kill switch (коммит `320addb`) и последующими изменениями (bootstrap, `/metrics`, `check`, формат цепочки 3). Устройство — [architecture.md](../00-overview/architecture.md) §2.2, §7.1; развёртывание — [intake-deploy.md](intake-deploy.md).
+
+## Порядок обновления
+
+1. **`aegis-audit` везде** (рабочие места аудитора, CI, хосты проверки checkpoint'ов): проверка `aegis-audit version` показывает `chain_format 3`. Верификаторы раньше писателей: цепочка с новыми записями не пройдёт `verify` старой сборки.
+2. **RBAC, bucket, ключи** kill switch ([intake-deploy.md](intake-deploy.md), шаги 1–4): Role `aegis-kill-switch-read` для ServiceAccount intake, read-only пара S3, egress intake до S3, ключи `oncall` и `renewer`.
+3. **Секция `kill_switch` в конфигурации intake.** Она обязательна: без неё `aegis-intake` не запускается (код 2) — ни `serve`, ни `collect`, ни `replay`.
+4. **Бинарь `aegis-intake` и `aegis-llmrouter`.** Роутер и intake делят цепочку и store; обновляйте вместе.
+5. **`metrics_listen` в конфигурации — только после обновления бинаря.** Старый бинарь отвергнет неизвестное поле конфигурации (строгий разбор). Затем NetworkPolicy и скрейп.
+6. **Release после старта.** Если в цепочке нет события с `stop_watermark` (первый запуск с kill switch, новая цепочка), первая оценка — bootstrap: intake работает с `llm.mode=off`, пока двое дежурных не опубликуют release с `issued_at` позже `stop_watermark` (`bootstrap_awaiting_release` в `/metrics`). Release, подготовленный до старта, не действует.
+7. **Мониторинг:** `aegis-killswitch check` во внешнем стеке и алерты ([intake-deploy.md](intake-deploy.md), шаг 7).
+
+## Откат
+
+Откат писателя ниже сборки `320addb` на той же цепочке **невозможен**: цепочка уже содержит записи `aegisops/killswitch-event/v1` и блоки `kill_switch`/`intake`, которых старая сборка не знает, поэтому её `OpenWriter` (строгая проверка) не откроет файл. Не пытайтесь править или обрезать цепочку: усечение ловят checkpoint'ы и это нарушение хранения. Откат возможен только на новую цепочку (новый `chain_id`, новый store роутера) с потерей непрерывности — решение Security и аудитора. Откат внутри новых сборок (например, с формата 3 на 2) подчиняется тому же правилу.
+
+## Таблица формата цепочки (`audit.ChainFormat`)
+
+| Уровень | Что добавлено | Минимальная сборка писателя |
+|---|---|---|
+| 1 | `decision-record/v1`, checkpoint | — |
+| 2 | `router-event/v1`, блок `intake` в decision record | сборки с llmrouter и intake |
+| 3 | `killswitch-event/v1` (поле `bootstrap`), блок `kill_switch`, `intake.source = replay.snapshot` | эта сборка |
+
+Новое поле или схема повышают уровень. `aegis-audit version` печатает уровень и известные схемы. Цепочка с записью новее сборки не проходит `verify` (код 1, `ErrNewerFormat`, «обновите aegis-audit») и не открывается для записи. `aegis-audit verify -integrity-only` проверяет цепь, хеши, подписи и checkpoint'ы полностью, но содержимое непонятых записей не читает (`unverified_records`, `unverified_schemas`, предупреждение в stderr): для диагностики и проверки целостности, **не для приёмки аудита**. Decision record в формате 2 в новый формат не переводится: старые записи остаются валидными (хеш считается по сохранённым байтам).
+
+## Прочие изменения поведения
+
+- **`replay` не офлайновый.** Без `-prepare-only` он читает kill switch так же, как `serve`: нужны kube-токен (`AEGIS_KUBE_TOKEN_FILE`), ключи S3 чтения, доступ до ConfigMap и S3 и секция `kill_switch`. На цепочке без истории действует bootstrap: первый прогон идёт в `off` (запись `llm.mode=off`), модель вызывается только после release и в новом прогоне; тот же снимок повторно не записывается (инцидент уже записан, дубль по ID пропускается), нужен другой снимок. Записи `replay` помечены `intake.source = replay.snapshot` (в цепочке они отличаются от живых). `-prepare-only` kill switch не читает.
+- **Переменные окружения** (serve, replay): `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE`, необязательный `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`; `AEGIS_KUBE_TOKEN_FILE` теперь читает и ConfigMap kill switch. **RBAC:** `get` на ConfigMap `kill-switch` в `aegisops-control`. **Egress:** до S3 внешнего канала. Без RBAC канал отвечает 403 (`http_403`): in-band канал не даёт подтверждения, при отказе обоих каналов — `no_confirmation` и `llm.mode=off`.
+- **Вход PEP.** Раньше `liveness_confirmed` из intake был всегда `false`, и каждый вердикт получал cap `liveness_unconfirmed`. Теперь флаги `kill_switch` и `liveness_confirmed` реальные. Следствие: `caps`, `effective_level` и `input_digest` записей до и после перехода **несравнимы**; `policy_revision` прежний. Метрики и baseline делите по наличию блока `kill_switch` в записи; записи с `kill_switch.state.stopped` (и `llm.mode=off`) исключайте из знаменателей.
+- **API.** `intake.Pipeline.KillSwitch == nil` трактуется как «остановлен, `no_confirmation`» (fail-safe), а не «без kill switch»; `intake.ShadowContext` получил аргумент `killswitch.State`; `intake.Pipeline` получил поля `Metrics` и `Source`, `intake.Service` — `Metrics`.
+- **Коды выхода `aegis-intake serve`:** 1 — fail-closed (store, цепочка, аудит, состояние intake, **запись события kill switch**), 2 — аргументы, конфигурация, окружение, в том числе занятый или неверный `metrics_listen`; 3 — файлы заняты. `aegis-killswitch check`: 0 — `ok`/`stopped`, 1 — `warning`/`critical`, 2 — аргументы.
+- **`collect`** требует секцию `kill_switch` в конфигурации (проверка), но kill switch не читает.
+- **Поле `bootstrap`** события kill switch: у событий до bootstrap его нет (читается как `false`); цепочка без непустого `stop_watermark` в последнем событии снова даст bootstrap.
+- **`metrics_listen`:** сначала бинарь, потом конфигурация; пустое значение — метрики выключены. NetworkPolicy ограничивает скрейп Prometheus'ом. `/healthz` — только liveness.
+- **Признак `bootstrap`.** На цепочке старой сборки (последнее событие без `stop_watermark`) bootstrap-событие пишется с `bootstrap=false`; после рестарта `bootstrap_awaiting_release` известен, только если последнее событие — bootstrap. В обоих случаях защита работает, но алерт `IntakeKillSwitchBootstrapAwaitingRelease` может не сработать — сработает `IntakeKillSwitchNoConfirmation`.

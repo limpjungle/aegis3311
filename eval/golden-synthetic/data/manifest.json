@@ -1,61 +1,62 @@
 {
- "generated_on": "2026-11-06",
- "generator_version": "2.0.0",
+ "generated_on": "2026-11-08",
+ "generator_version": "5.0.0",
+ "set_format": "v5",
  "data_class": "internal",
  "synthetic": true,
  "sets": {
   "probe": {
-   "file": "data/probe-v2.jsonl",
+   "file": "data/probe-v5.jsonl",
    "seed": 20261105,
-   "cases": 480,
-   "sha256": "97908de7e3962c09997fabc50e3d8e85e338580df625b258e73218e251dcf2f0",
+   "cases": 635,
+   "sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
    "by_class": {
     "RB-001": 125,
     "RB-002": 15,
-    "RB-003": 122,
-    "RB-004": 30,
+    "RB-003": 247,
+    "RB-004": 50,
     "RB-005": 30,
-    "RB-006": 123,
+    "RB-006": 133,
     "RB-007": 20,
     "other": 15
    },
    "by_slice": {
     "adversarial": 50,
-    "confuser": 105,
-    "core": 200,
+    "confuser": 190,
+    "core": 235,
     "insufficient": 25,
-    "negative": 100
+    "negative": 135
    }
   },
   "dev": {
-   "file": "data/dev-v2.jsonl",
+   "file": "data/dev-v5.jsonl",
    "seed": 20261106,
-   "cases": 113,
-   "sha256": "f9e02977deafb21a7f7055534c86144eefe345ddff36fb0ad562d2feef3050ef",
+   "cases": 147,
+   "sha256": "5cb8a0a80ca2b8d15f171059d9b9799ea00ae4887e57ceb0727b3086043c3f00",
    "by_class": {
     "RB-001": 27,
     "RB-002": 3,
-    "RB-003": 32,
-    "RB-004": 7,
+    "RB-003": 60,
+    "RB-004": 11,
     "RB-005": 7,
-    "RB-006": 29,
+    "RB-006": 31,
     "RB-007": 5,
     "other": 3
    },
    "by_slice": {
     "adversarial": 12,
-    "confuser": 24,
-    "core": 49,
+    "confuser": 42,
+    "core": 57,
     "insufficient": 6,
-    "negative": 22
+    "negative": 30
    }
   }
  },
  "prompt": {
-  "file": "prompt/system-v3.md",
-  "sha256": "d1138cc6e4657d379eda003dc8565e395aae294f7070ebf185b4387bbcb3266c",
-  "since": "2026-11-06",
-  "changes": "answer format v2: the model chooses only the action and discrete params (scope, pod_name, reason, parameter); sizes and identifiers come from `computed`"
+  "file": "prompt/system-v5.md",
+  "sha256": "c66a8c6dbb620a96be882a9b979df639dc17a9c6c8c6aecace18e6f6ee809ebc",
+  "since": "2026-11-08",
+  "changes": "verdict error (Argo AnalysisRun Error): not a result, no RB-003 rollback, not inconclusive; RB-004 rollback regardless of verdict"
  },
  "answer_schema": {
   "file": "schema/answer.schema-v2.json",
@@ -76,6 +77,22 @@
    "changes": "explicit root-cause mapping (RB-003/RB-004/other), RB-001 check order with db_slow_queries before resize, mandatory constrained params, actions only from allowed_actions, time-series reading rule (last 5 values), evidence format and no-repeat rule",
    "until": "2026-11-06",
    "reason": "answer format v2 (no magnitude params)"
+  },
+  {
+   "file": "prompt/system-v3.md",
+   "sha256": "d1138cc6e4657d379eda003dc8565e395aae294f7070ebf185b4387bbcb3266c",
+   "since": "2026-11-06",
+   "changes": "answer format v2: the model chooses only the action and discrete params (scope, pod_name, reason, parameter); sizes and identifiers come from `computed`",
+   "until": "2026-11-08",
+   "reason": "decision 2026-11-08: prompt v4 and set v4 (previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data); probe-v4 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §15.4 met, report approved by the operator"
+  },
+  {
+   "file": "prompt/system-v4.md",
+   "sha256": "446f4ba56095771d700063544d1ffb445cc65e4058e95fa7ad0083d111b9272f",
+   "since": "2026-11-08",
+   "changes": "previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data",
+   "until": "2026-11-08",
+   "reason": "decision 2026-11-08: Argo AnalysisRun Error gets its own verdict error (was degradation); prompt v5 and set v5 (analysis_error_* and crashloop_analysis_error); probe-v5 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §16.6 met, report approved by the operator"
   }
  ],
  "sets_history": [
@@ -132,6 +149,171 @@
     }
    },
    "reason": "decision 2026-11-06: magnitude is computed by deterministic catalog step rules, the model chooses only the action and discrete params; run-to-run exact agreement was 94.8% (Inceptron) / 79.4% (Wafer) mostly due to magnitude choice"
+  },
+  {
+   "until": "2026-11-07",
+   "set_format": "v2",
+   "answer_format": "v2",
+   "generator_version": "2.0.0",
+   "sets": {
+    "probe": {
+     "file": "data/probe-v2.jsonl",
+     "seed": 20261105,
+     "cases": 480,
+     "sha256": "97908de7e3962c09997fabc50e3d8e85e338580df625b258e73218e251dcf2f0",
+     "by_class": {
+      "RB-001": 125,
+      "RB-002": 15,
+      "RB-003": 122,
+      "RB-004": 30,
+      "RB-005": 30,
+      "RB-006": 123,
+      "RB-007": 20,
+      "other": 15
+     },
+     "by_slice": {
+      "adversarial": 50,
+      "confuser": 105,
+      "core": 200,
+      "insufficient": 25,
+      "negative": 100
+     }
+    },
+    "dev": {
+     "file": "data/dev-v2.jsonl",
+     "seed": 20261106,
+     "cases": 113,
+     "sha256": "f9e02977deafb21a7f7055534c86144eefe345ddff36fb0ad562d2feef3050ef",
+     "by_class": {
+      "RB-001": 27,
+      "RB-002": 3,
+      "RB-003": 32,
+      "RB-004": 7,
+      "RB-005": 7,
+      "RB-006": 29,
+      "RB-007": 5,
+      "other": 3
+     },
+     "by_slice": {
+      "adversarial": 12,
+      "confuser": 24,
+      "core": 49,
+      "insufficient": 6,
+      "negative": 22
+     }
+    }
+   },
+   "reason": "decision 2026-11-07: the model sees the target pod list (input.service.pods); the Go cross-check derives workload.restart from it instead of allowed_actions"
+  },
+  {
+   "until": "2026-11-08",
+   "set_format": "v3",
+   "answer_format": "v2",
+   "generator_version": "3.0.0",
+   "sets": {
+    "probe": {
+     "file": "data/probe-v3.jsonl",
+     "seed": 20261105,
+     "cases": 480,
+     "sha256": "51059312c93e3515145cc3c4306928ccfd186c324a5ce22efc094626d3dbc3d5",
+     "by_class": {
+      "RB-001": 125,
+      "RB-002": 15,
+      "RB-003": 122,
+      "RB-004": 30,
+      "RB-005": 30,
+      "RB-006": 123,
+      "RB-007": 20,
+      "other": 15
+     },
+     "by_slice": {
+      "adversarial": 50,
+      "confuser": 105,
+      "core": 200,
+      "insufficient": 25,
+      "negative": 100
+     }
+    },
+    "dev": {
+     "file": "data/dev-v3.jsonl",
+     "seed": 20261106,
+     "cases": 113,
+     "sha256": "91aff296063bc8b6081e834d259ebedbb3326901729f6d978e51d6caffbaaebf",
+     "by_class": {
+      "RB-001": 27,
+      "RB-002": 3,
+      "RB-003": 32,
+      "RB-004": 7,
+      "RB-005": 7,
+      "RB-006": 29,
+      "RB-007": 5,
+      "other": 3
+     },
+     "by_slice": {
+      "adversarial": 12,
+      "confuser": 24,
+      "core": 49,
+      "insufficient": 6,
+      "negative": 22
+     }
+    }
+   },
+   "reason": "decision 2026-11-08: prompt v4 and set v4 (previous_analysis_run, verdict running, analysis_run null, threshold analysis, live Bake, missing data); probe-v4 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §15.4 met, report approved by the operator"
+  },
+  {
+   "until": "2026-11-08",
+   "set_format": "v4",
+   "answer_format": "v2",
+   "generator_version": "4.0.0",
+   "sets": {
+    "probe": {
+     "file": "data/probe-v4.jsonl",
+     "seed": 20261105,
+     "cases": 595,
+     "sha256": "32546136d95af37390d53223c029b4219da21e64656d2b665feccab54d362dba",
+     "by_class": {
+      "RB-001": 125,
+      "RB-002": 15,
+      "RB-003": 217,
+      "RB-004": 40,
+      "RB-005": 30,
+      "RB-006": 133,
+      "RB-007": 20,
+      "other": 15
+     },
+     "by_slice": {
+      "adversarial": 50,
+      "confuser": 170,
+      "core": 235,
+      "insufficient": 25,
+      "negative": 115
+     }
+    },
+    "dev": {
+     "file": "data/dev-v4.jsonl",
+     "seed": 20261106,
+     "cases": 138,
+     "sha256": "295f7dcaf605409a7722ac0ce33947f1e07faaddc173f6cd9a1443618fc3e114",
+     "by_class": {
+      "RB-001": 27,
+      "RB-002": 3,
+      "RB-003": 53,
+      "RB-004": 9,
+      "RB-005": 7,
+      "RB-006": 31,
+      "RB-007": 5,
+      "other": 3
+     },
+     "by_slice": {
+      "adversarial": 12,
+      "confuser": 38,
+      "core": 57,
+      "insufficient": 6,
+      "negative": 25
+     }
+    }
+   },
+   "reason": "decision 2026-11-08: Argo AnalysisRun Error gets its own verdict error (was degradation); prompt v5 and set v5 (analysis_error_* and crashloop_analysis_error); probe-v5 references frozen 2026-11-08 on both profiles, switch criteria golden-set.md §16.6 met, report approved by the operator"
   }
  ],
  "answer_schema_history": [

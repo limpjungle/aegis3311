@@ -9,9 +9,10 @@ forbidden_namespaces := {"kube-system", "aegisops-system"}
 # Обязательные поля входа; отсутствие любого — deny (fail-closed).
 required_paths := [
 	["action", "type"], ["action", "reversibility"], ["action", "lease"],
-	["action", "error_budget_exhausted"], ["action", "degraded_mode"],
+	["action", "error_budget_exhausted"], ["action", "degraded_mode"], ["action", "computed"], ["action", "params"],
 	["action", "rate_limit", "per_target_per_hour"], ["action", "rate_limit", "cooldown_seconds"],
-	["target", "environment"], ["target", "namespace"], ["target", "namespace_labels"],
+	["target", "environment"], ["target", "namespace"], ["target", "namespace_labels"], ["target", "analysis_verdict"],
+	["target", "insufficient_data_policy"],
 	["level", "granted"], ["level", "by_data"],
 	["flags", "kill_switch", "global"], ["flags", "kill_switch", "cluster"], ["flags", "kill_switch", "actions"],
 	["flags", "liveness_confirmed"], ["flags", "error_budget_exhausted"], ["flags", "degraded_mode"],
@@ -138,6 +139,63 @@ caps contains {"code": "lease_missing", "level": "L1", "detail": "нет дей�
 	object.get(input, ["action", "lease"], "") == "required"
 	flag("lease_held") != true
 }
+
+# Откат без анализа текущей ревизии (computed.analysis_run пуст): вердикта нет, решает человек (golden-set.md §16).
+caps contains {"code": "analysis_missing", "level": "L1", "detail": "нет анализа текущей ревизии: откат решает человек"} if {
+	action_type == "rollout.abort_and_rollback"
+	not analysis_run_present
+}
+
+analysis_run_present if {
+	v := object.get(input, ["action", "computed", "analysis_run"], "")
+	is_string(v)
+	v != ""
+}
+
+# Вердикт анализа, который подтверждает причину отката. Остальные сочетания (error, running, success, inconclusive при
+# canary/bake_degradation, degradation при insufficient_data_policy, неизвестная причина) — откат решает человек.
+# При подтверждающем вердикте для insufficient_data_policy действует ещё и правило политики сервиса (ниже).
+rollback_supported_by := {
+	"canary_degradation": "degradation",
+	"bake_degradation": "degradation",
+	"insufficient_data_policy": "inconclusive",
+}
+
+caps contains {"code": "analysis_verdict", "level": "L1", "detail": sprintf("вердикт анализа %q не подтверждает откат с причиной %v: решает человек", [verdict, reason])} if {
+	action_type == "rollout.abort_and_rollback"
+	analysis_run_present
+	not rollback_verdict_supported
+	verdict := object.get(input, ["target", "analysis_verdict"], "")
+	reason := object.get(input, ["action", "params", "reason"], null)
+}
+
+rollback_verdict_supported if {
+	reason := object.get(input, ["action", "params", "reason"], null)
+	is_string(reason)
+	object.get(input, ["target", "analysis_verdict"], "") == rollback_supported_by[reason]
+}
+
+# Откат с причиной insufficient_data_policy подчиняется политике сервиса при недостатке данных canary
+# (реестр сервисов intake, services[].insufficient_data_policy): hold — откат запрещён владельцем сервиса;
+# rollback — без ограничений; human, не задана или неизвестна — решает человек. Правило не зависит от анализа и вердикта.
+insufficient_data_rollback if {
+	action_type == "rollout.abort_and_rollback"
+	object.get(input, ["action", "params", "reason"], null) == "insufficient_data_policy"
+}
+
+service_data_policy := object.get(input, ["target", "insufficient_data_policy"], "")
+
+deny contains {"code": "insufficient_data_hold", "detail": "политика сервиса hold: владелец запретил откат при недостатке данных canary"} if {
+	insufficient_data_rollback
+	service_data_policy == "hold"
+}
+
+caps contains {"code": "insufficient_data_policy", "level": "L1", "detail": sprintf("политика сервиса при недостатке данных %v: откат решает человек", [data_policy_label])} if {
+	insufficient_data_rollback
+	not service_data_policy in {"rollback", "hold"}
+}
+
+data_policy_label := "не задана" if service_data_policy == "" else := service_data_policy
 
 caps contains {"code": "human_engaged", "level": "L1", "detail": "человек взял инцидент"} if {
 	flag("human_engaged") == true

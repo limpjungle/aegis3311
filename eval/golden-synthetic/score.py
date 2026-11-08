@@ -5,7 +5,11 @@
   --cases  JSONL с кейсами (generate.py)
   --pred   JSONL с ответами: {"id": ..., "answer": {...} | null, "error": str | null, "endpoint": "..."}
   --ref    (необязательно) JSONL эталонных ответов этой же модели — для метрики совпадения
+  --ref-ids-only  считать только кейсы, id которых есть в --ref
+  --by-variant    добавить группы variant:<имя>
   --out    (необязательно) путь для JSON-отчёта
+
+Формат ответа берётся из поля answer_format кейса; набор v3 использует формат ответа v2 (отличается только входом).
 
 Метрики (по классам, слайсам и в целом, с 95%-м ДИ Уилсона):
   class_match      — совпал класс инцидента
@@ -169,12 +173,14 @@ METRICS = ["class_match", "root_cause_match", "admissible", "harmful", "schema_v
            "decision_agreement"]
 
 
-def aggregate(rows):
+def aggregate(rows, by_variant=False):
     groups = defaultdict(list)
     for r in rows:
         groups[("all", "all")].append(r)
         groups[("class", r["class"])].append(r)
         groups[("slice", r["slice"])].append(r)
+        if by_variant:
+            groups[("variant", r["variant"])].append(r)
     out = {}
     for (kind, name), rs in sorted(groups.items()):
         entry = {"n": len(rs)}
@@ -205,10 +211,19 @@ def main():
     ap.add_argument("--pred", required=True)
     ap.add_argument("--ref")
     ap.add_argument("--out")
+    ap.add_argument("--by-variant", action="store_true", help="дополнительно группировать по variant")
+    ap.add_argument("--ref-ids-only", action="store_true",
+                    help="считать только кейсы, id которых есть в --ref (сравнение набора v4 с эталоном v3)")
     args = ap.parse_args()
+    if args.ref_ids_only and not args.ref:
+        ap.error("--ref-ids-only requires --ref")
     cases = load_jsonl(args.cases)
-    rows = score(cases, load_jsonl(args.pred), load_jsonl(args.ref) if args.ref else None)
-    agg = aggregate(rows)
+    refs = load_jsonl(args.ref) if args.ref else None
+    if args.ref_ids_only:
+        ref_ids = {r["id"] for r in refs}
+        cases = [c for c in cases if c["id"] in ref_ids]
+    rows = score(cases, load_jsonl(args.pred), refs)
+    agg = aggregate(rows, args.by_variant)
     print_table(agg)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

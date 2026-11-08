@@ -3,7 +3,7 @@ package aegis.pep
 
 import data.aegis.autonomy
 
-policy_revision := "0.1.0"
+policy_revision := "0.4.0"
 
 # Нет ячейки матрицы — потолок L0 (и deny no_matrix_cell).
 default matrix_ceiling := "L0"
@@ -17,12 +17,13 @@ else := min(ranks) if {
 	ranks := {autonomy.levels[granted], autonomy.levels[matrix_ceiling]} | {autonomy.levels[c.level] | some c in caps}
 }
 
+# Литерал ревизии дублирует policy_revision: default-правило не может ссылаться на переменные.
 default decision := {
 	"ceiling": "L0",
 	"effective_level": "L0",
 	"deny": [{"code": "policy_undefined", "detail": "решение политики не определено"}],
 	"caps": [],
-	"policy_revision": "0.1.0",
+	"policy_revision": "0.4.0",
 }
 
 decision := {

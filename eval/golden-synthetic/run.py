@@ -225,8 +225,9 @@ def validate_profile(cfg, name, *, for_network):
 
 # ---------------------------------------------------------------- целостность
 
-def check_integrity(set_name, allow_mismatch, base=BASE):
-    """Читает manifest, набор, промпт и схему; сверяет хеши по тем же байтам, что потом используются."""
+def check_integrity(set_name, allow_mismatch, base=BASE, staged=False):
+    """Читает manifest, набор, промпт и схему; сверяет хеши по тем же байтам, что потом используются.
+    staged — берёт набор, промпт и схему кандидата из manifest["staged"] вместо активных."""
     def read(rel):
         path = os.path.realpath(os.path.join(base, rel))
         if not path.startswith(os.path.realpath(base) + os.sep):
@@ -240,9 +241,12 @@ def check_integrity(set_name, allow_mismatch, base=BASE):
     mbytes = read("data/manifest.json")
     try:
         manifest = json.loads(mbytes.decode("utf-8"))
-        entry = manifest["sets"][set_name]
-        files = {"set": (entry["file"], entry["sha256"]), "prompt": (manifest["prompt"]["file"], manifest["prompt"]["sha256"]),
-                 "schema": (manifest["answer_schema"]["file"], manifest["answer_schema"]["sha256"])}
+        if staged and "staged" not in manifest:
+            raise IntegrityError("manifest has no staged candidate (--staged needs manifest.staged)")
+        track = manifest["staged"] if staged else manifest
+        entry = track["sets"][set_name]
+        files = {"set": (entry["file"], entry["sha256"]), "prompt": (track["prompt"]["file"], track["prompt"]["sha256"]),
+                 "schema": (track["answer_schema"]["file"], track["answer_schema"]["sha256"])}
         expected_cases = entry["cases"]
     except (ValueError, KeyError, TypeError) as e:
         raise IntegrityError(f"manifest is malformed: {e!r}")
@@ -299,6 +303,11 @@ def build_request(case_input, system_prompt, schema, cfg, profile):
 
 def body_bytes(body):
     return canon_json(body).encode("utf-8")
+
+
+def request_digest(body):
+    """sha256 канонического тела запроса: тот же хеш пишется в строку результата и в фикстуру --emit-requests."""
+    return sha256_bytes(body_bytes(body))
 
 
 def assert_request_safe(body, cfg, profile):
@@ -779,7 +788,7 @@ class Runner:
         body = build_request(case["input"], self.system_prompt, self.schema, cfg, profile)
         assert_request_safe(body, cfg, profile)
         data = body_bytes(body)
-        sha = sha256_bytes(data)
+        sha = request_digest(body)
         est = estimate_input_tokens(body, cfg)
         max_tokens = body["max_tokens"]
         if est + max_tokens > cfg["context_ceiling_tokens"]:
@@ -833,6 +842,8 @@ def make_parser():
     ap.add_argument("--out")
     ap.add_argument("--resume")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--staged", action="store_true", help="набор, промпт и схема кандидата из manifest.staged")
+    ap.add_argument("--emit-requests", metavar="PATH", help="с --dry-run: JSONL id, request_sha256, est_input_tokens")
     ap.add_argument("--show-full", action="store_true")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--ids")
@@ -958,6 +969,8 @@ def _run(argv, con, transport, sleep, rng, clock, env, base_dir):
         raise ConfigError("--allow-hash-mismatch is only allowed with --set dev")
     if args.limit is not None and args.limit < 1:
         raise ConfigError("--limit must be >= 1")
+    if args.emit_requests and not args.dry_run:
+        raise ConfigError("--emit-requests is only allowed with --dry-run")
 
     cfg_path = args.config or os.path.join(base, "profiles.json")
     cfg, cfg_sha = read_config(cfg_path)
@@ -981,7 +994,7 @@ def _run(argv, con, transport, sleep, rng, clock, env, base_dir):
         preflight(args, cfg, profile, transport or UrllibTransport(), key, con)
         return 0
 
-    integ = check_integrity(args.set_name, args.allow_hash_mismatch, base)
+    integ = check_integrity(args.set_name, args.allow_hash_mismatch, base, args.staged)
     for p in integ["problems"]:
         con.warn(f"WARNING: integrity bypassed (--allow-hash-mismatch): {p}")
     cases = integ["cases"]
@@ -1002,7 +1015,14 @@ def _run(argv, con, transport, sleep, rng, clock, env, base_dir):
         bodies = [build_request(c["input"], integ["prompt"], integ["schema"], cfg, profile) for c in cases]
         for b in bodies:
             assert_request_safe(b, cfg, profile)
-        print_dry_run(con, cfg, profile, bodies[0], [estimate_input_tokens(b, cfg) for b in bodies], args.show_full)
+        ests = [estimate_input_tokens(b, cfg) for b in bodies]
+        if args.emit_requests:
+            lines = [json.dumps({"id": c["id"], "request_sha256": request_digest(b), "est_input_tokens": e},
+                                sort_keys=True, separators=(",", ":")) for c, b, e in zip(cases, bodies, ests)]
+            os.makedirs(os.path.dirname(os.path.abspath(args.emit_requests)), exist_ok=True)
+            with open(args.emit_requests, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        print_dry_run(con, cfg, profile, bodies[0], ests, args.show_full)
         return 0
 
     with open(os.path.join(BASE, "run.py"), "rb") as f:
@@ -1052,7 +1072,7 @@ def _run(argv, con, transport, sleep, rng, clock, env, base_dir):
             "api_host": urllib.parse.urlsplit(cfg["api_url"]).hostname, "generation": generation,
             "provider_request": profile["provider"], "set": args.set_name, "set_file": integ["set_file"],
             "cases_total": len(cases), "selected_ids_sha256": ids_sha, "hashes": hashes,
-            "integrity_bypassed": integ["bypassed"], "started_at": now_iso(), "updated_at": None, "finished_at": None,
+            "integrity_bypassed": integ["bypassed"], "track": "staged" if args.staged else "active", "started_at": now_iso(), "updated_at": None, "finished_at": None,
             "status": "running", "abort_reason": None}
     if args.resume:
         meta["started_at"] = old.get("started_at", meta["started_at"])

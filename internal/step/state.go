@@ -1,5 +1,6 @@
 // Package step содержит детерминированные правила шага и вывод доступных действий.
-// Формулы — зеркало eval/golden-synthetic/generate.py (step_*, allowed_actions_v2); расхождение ловит кросс-проверка на наборах.
+// Формулы — зеркало eval/golden-synthetic/generate.py (step_*, allowed_actions_v2); расхождение ловит кросс-проверка на наборах
+// (формат набора v3: поды цели берутся из input.service.pods).
 package step
 
 import "fmt"
@@ -14,10 +15,13 @@ type Autoscaler struct {
 }
 
 // Rollout — состояние Argo Rollout. Name у Healthy-rollout может быть null; AnalysisRun — имя активного AnalysisRun, может быть пустым.
+// AnalysisVerdict — вердикт этого AnalysisRun (success | degradation | inconclusive | error | running), пусто без анализа.
+// Правила шага его не используют; его читает PEP: автономный откат только при вердикте, подтверждающем причину отката.
 type Rollout struct {
-	Name        *string `json:"name"`
-	Phase       string  `json:"phase"`
-	AnalysisRun string  `json:"analysis_run"`
+	Name            *string `json:"name"`
+	Phase           string  `json:"phase"`
+	AnalysisRun     string  `json:"analysis_run"`
+	AnalysisVerdict string  `json:"analysis_verdict,omitempty"`
 }
 
 type PgBouncer struct {
@@ -46,6 +50,9 @@ type TargetState struct {
 	Pods       []string    `json:"pods"`
 	Rollout    *Rollout    `json:"rollout"`
 	DB         *DB         `json:"db"`
+	// InsufficientDataPolicy — политика сервиса при недостатке данных canary (hold | rollback | human) из реестра
+	// сервисов; nil — не задана. Правила шага её не используют; её читает PEP для отката insufficient_data_policy.
+	InsufficientDataPolicy *string `json:"insufficient_data_policy,omitempty"`
 }
 
 // Validate проверяет только то, без чего правила дают бессмысленный результат: целые >= 0 и вид autoscaler'а.

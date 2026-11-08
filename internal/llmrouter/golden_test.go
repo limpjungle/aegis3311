@@ -50,12 +50,30 @@ func readJSONL(t testing.TB, path string) []*pyjson.Value {
 	return out
 }
 
-// Файлы промпта и схемы v3: проба и эталоны v3 привязаны к ним независимо от того, какой промпт активен.
+// Файлы промпта и схемы: проба и эталоны каждой версии привязаны к ним независимо от того, какой промпт активен.
 const (
 	promptV3 = "prompt/system-v3.md"
 	schemaV2 = "schema/answer.schema-v2.json"
 	promptV4 = "prompt/system-v4.md"
 )
+
+// probeVersion — версия пробы с замороженными эталонами: набор, промпт и число кейсов.
+// v4 активна с 08.11.2026 (golden-set.md §15.5), v3 — архив, её эталоны проверяются на закреплённых ассетах v3.
+type probeVersion struct {
+	name, setFile, prompt string
+	cases                 int
+	truncated             map[string]int // обрезанных ответов в эталоне по профилю
+}
+
+var (
+	probeV3 = probeVersion{"v3", "data/probe-v3.jsonl", promptV3, 480, map[string]int{"inceptron-fp8": 1, "wafer-nvfp4": 0}}
+	probeV4 = probeVersion{"v4", "data/probe-v4.jsonl", promptV4, 595, map[string]int{"inceptron-fp8": 0, "wafer-nvfp4": 0}}
+)
+
+func (v probeVersion) load(t testing.TB) []*pyjson.Value { return loadProbeSet(t, v.setFile, v.cases) }
+func (v probeVersion) assets(t testing.TB) *openrouter.Assets {
+	return loadAssetsPinned(t, v.prompt, schemaV2)
+}
 
 // manifestSet ищет запись набора пробы по файлу: в активных sets, в staged и в sets_history.
 func manifestSet(t testing.TB, man *pyjson.Value, file string) *pyjson.Value {
@@ -107,27 +125,24 @@ func loadProbeSet(t testing.TB, file string, n int) []*pyjson.Value {
 	return cases
 }
 
-// loadProbeV3 — набор v3 по файлу, а не по sets.probe: после переключения на v4 он переезжает в sets_history.
-func loadProbeV3(t testing.TB) []*pyjson.Value { return loadProbeSet(t, "data/probe-v3.jsonl", 480) }
-
 type refFile struct {
 	path string
 	rows map[string]*pyjson.Value
 	meta *pyjson.Value
 }
 
-func loadRefs(t testing.TB, profile string) refFile {
+func loadRefs(t testing.TB, v probeVersion, profile string) refFile {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(goldenDir, "refs", profile, "probe-v3-*.jsonl"))
+	paths, err := filepath.Glob(filepath.Join(goldenDir, "refs", profile, "probe-"+v.name+"-*.jsonl"))
 	if err != nil || len(paths) != 1 {
-		t.Fatalf("эталон probe-v3 профиля %s: найдено %d файлов (%v), нужен ровно один", profile, len(paths), err)
+		t.Fatalf("эталон probe-%s профиля %s: найдено %d файлов (%v), нужен ровно один", v.name, profile, len(paths), err)
 	}
 	rf := refFile{path: paths[0], rows: map[string]*pyjson.Value{}}
 	for _, r := range readJSONL(t, paths[0]) {
 		rf.rows[r.Get("id").S] = r
 	}
-	if len(rf.rows) != 480 {
-		t.Fatalf("%s: строк %d, ожидается 480", paths[0], len(rf.rows))
+	if len(rf.rows) != v.cases {
+		t.Fatalf("%s: строк %d, ожидается %d", paths[0], len(rf.rows), v.cases)
 	}
 	mb, err := os.ReadFile(paths[0] + ".meta.json")
 	if err != nil {
@@ -193,13 +208,17 @@ var probeProfiles = []struct {
 	role Role
 }{{"inceptron-fp8", RolePrimary}, {"wafer-nvfp4", RoleFallback}}
 
-func TestProbeV3MetaMatchesAssets(t *testing.T) {
-	a := loadAssetsPinned(t, promptV3, schemaV2)
-	const hint = "; смена profiles.json, промпта или схемы требует новых эталонов probe-v3"
+func TestProbeV3MetaMatchesAssets(t *testing.T) { testProbeMetaMatchesAssets(t, probeV3) }
+func TestProbeV4MetaMatchesAssets(t *testing.T) { testProbeMetaMatchesAssets(t, probeV4) }
+
+func testProbeMetaMatchesAssets(t *testing.T, v probeVersion) {
+	a := v.assets(t)
+	setSHA := manifestSet(t, readManifest(t), v.setFile).Get("sha256").S
+	hint := "; смена profiles.json, промпта или схемы требует новых эталонов probe-" + v.name
 	for _, pp := range probeProfiles {
-		rf := loadRefs(t, pp.name)
+		rf := loadRefs(t, v, pp.name)
 		h := rf.meta.Get("hashes")
-		for k, got := range map[string]string{"prompt": a.SystemSHA256, "schema": a.SchemaSHA256, "config": a.ConfigSHA256} {
+		for k, got := range map[string]string{"set": setSHA, "prompt": a.SystemSHA256, "schema": a.SchemaSHA256, "config": a.ConfigSHA256} {
 			if want := h.Get(k).S; want != got {
 				t.Errorf("%s: hashes.%s эталона %.12s != ассет %.12s%s", pp.name, k, want, got, hint)
 			}
@@ -227,13 +246,19 @@ func TestProbeV3MetaMatchesAssets(t *testing.T) {
 	}
 }
 
-func TestProbeV3Reproducible(t *testing.T) {
-	cases := loadProbeV3(t)
+func TestProbeV3Reproducible(t *testing.T) { testProbeReproducible(t, probeV3) }
+
+// Эталоны probe-v4 воспроизводятся побайтно: request_sha256 и est_input_tokens каждого кейса (заменяет прежнюю
+// сверку с фикстурой запросов run.py --staged --dry-run, golden-set.md §15.5).
+func TestProbeV4Reproducible(t *testing.T) { testProbeReproducible(t, probeV4) }
+
+func testProbeReproducible(t *testing.T, v probeVersion) {
+	cases := v.load(t)
 	ctx := context.Background()
 	for _, pp := range probeProfiles {
-		rf := loadRefs(t, pp.name)
+		rf := loadRefs(t, v, pp.name)
 		im := &identityMasker{}
-		rg := newRigAssets(t, loadAssetsPinned(t, promptV3, schemaV2), im, &stubTransport{}, "", nil)
+		rg := newRigAssets(t, v.assets(t), im, &stubTransport{}, "", nil)
 		var emptyEvents, noDB, noPDB, withDB int
 		for _, c := range cases {
 			req, nfrag := caseRequest(t, c)
@@ -365,54 +390,33 @@ func TestActiveAssetsHaveReferencesRejectsUnfrozen(t *testing.T) {
 	if err := checkActiveReferences(copyFS(func(*pyjson.Value) {})); err != nil {
 		t.Fatalf("исходный manifest: %v", err)
 	}
+	// Архивные записи v3 — в prompt_history и sets_history (переключение 08.11.2026).
+	histOf := func(man *pyjson.Value, key, file string) *pyjson.Value {
+		for _, it := range man.Get(key).Items {
+			e := it
+			if key == "sets_history" {
+				e = it.Get("sets").Get("probe")
+			}
+			if f := e.Get("file"); f != nil && f.S == file {
+				return e
+			}
+		}
+		t.Fatalf("%s: нет записи %s", key, file)
+		return nil
+	}
 	cases := map[string]func(man *pyjson.Value){
-		"активный промпт v4": func(man *pyjson.Value) {
-			sp := man.Get("staged").Get("prompt")
-			man.Get("prompt").Set("file", sp.Get("file"))
-			man.Get("prompt").Set("sha256", sp.Get("sha256"))
+		"промпт v3 при наборе v4": func(man *pyjson.Value) {
+			hp := histOf(man, "prompt_history", promptV3)
+			man.Get("prompt").Set("file", hp.Get("file"))
+			man.Get("prompt").Set("sha256", hp.Get("sha256"))
 		},
-		"активный набор v4": func(man *pyjson.Value) {
-			man.Get("sets").Set("probe", man.Get("staged").Get("sets").Get("probe"))
+		"набор v3 при промпте v4": func(man *pyjson.Value) {
+			man.Get("sets").Set("probe", histOf(man, "sets_history", "data/probe-v3.jsonl"))
 		},
 	}
 	for name, mut := range cases {
 		if err := checkActiveReferences(copyFS(mut)); err == nil {
 			t.Errorf("%s: принято без эталонов", name)
-		}
-	}
-}
-
-// Запросы Go (Prepare с настоящими ассетами v4) совпадают с запросами run.py: фикстура requests/<profile>/probe-v4.jsonl
-// — вывод run.py --staged --dry-run --emit-requests, то есть эталон по хешам до записи эталонов v4.
-func TestProbeV4RequestsMatchRunner(t *testing.T) {
-	cases := loadProbeSet(t, "data/probe-v4.jsonl", 595)
-	ctx := context.Background()
-	for _, pp := range probeProfiles {
-		want := map[string]*pyjson.Value{}
-		for _, r := range readJSONL(t, filepath.Join(goldenDir, "requests", pp.name, "probe-v4.jsonl")) {
-			want[r.Get("id").S] = r
-		}
-		if len(want) != len(cases) {
-			t.Fatalf("%s: в фикстуре %d строк, кейсов %d", pp.name, len(want), len(cases))
-		}
-		rg := newRigAssets(t, loadAssetsPinned(t, promptV4, schemaV2), &identityMasker{}, &stubTransport{}, "", nil)
-		for _, c := range cases {
-			req, _ := caseRequest(t, c)
-			p, err := rg.r.Prepare(ctx, req, pp.role)
-			if err != nil {
-				t.Fatalf("%s %s: %v", pp.name, req.IncidentID, err)
-			}
-			w := want[req.IncidentID]
-			if w == nil {
-				t.Fatalf("%s: нет в фикстуре %s", req.IncidentID, pp.name)
-			}
-			if p.NotSent != "" || len(p.Excluded) != 0 || len(p.Dropped) != 0 || p.LabelsDropped != 0 {
-				t.Fatalf("%s %s: NotSent=%q excluded=%d dropped=%d", pp.name, req.IncidentID, p.NotSent, len(p.Excluded), len(p.Dropped))
-			}
-			if p.RequestSHA256 != w.Get("request_sha256").S || fmt.Sprint(p.EstInputTokens) != w.Get("est_input_tokens").Int {
-				t.Fatalf("%s %s: request_sha256 %s != run.py %s; est_input_tokens %d != %s", pp.name, req.IncidentID,
-					p.RequestSHA256, w.Get("request_sha256").S, p.EstInputTokens, w.Get("est_input_tokens").Int)
-			}
 		}
 	}
 }
@@ -448,12 +452,22 @@ func openRouterReply(ref *pyjson.Value) []byte {
 	return pyjson.Marshal(reply, pyjson.PyDefault)
 }
 
-func TestProbeV3ReplayHTTP(t *testing.T) {
-	cases := loadProbeV3(t)
+func TestProbeV3ReplayHTTP(t *testing.T) { testProbeReplayHTTP(t, probeV3) }
+
+// Ответы эталонов probe-v4 проигрываются через HTTP на активных ассетах v4 (как роутер в эксплуатации).
+func TestProbeV4ReplayHTTP(t *testing.T) {
+	if a := loadAssets(t); a.PromptFile != promptV4 {
+		t.Fatalf("активный промпт %s, ожидается %s", a.PromptFile, promptV4)
+	}
+	testProbeReplayHTTP(t, probeV4)
+}
+
+func testProbeReplayHTTP(t *testing.T, v probeVersion) {
+	cases := v.load(t)
 	refs := map[string]*pyjson.Value{} // sha тела → строка эталона
 	byProfile := map[string]refFile{}
 	for _, pp := range probeProfiles {
-		rf := loadRefs(t, pp.name)
+		rf := loadRefs(t, v, pp.name)
 		byProfile[pp.name] = rf
 		for _, row := range rf.rows {
 			refs[row.Get("request_sha256").S] = row
@@ -515,7 +529,7 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := loadAssetsPinned(t, promptV3, schemaV2)
+	a := v.assets(t)
 	clock := newFakeClock()
 	rst := routerstate.NewMemory(testIdentity(a)) // один store на оба роутера: второй видит ту же историю
 	newRouter := func() *Router {
@@ -581,8 +595,8 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if profile == "inceptron-fp8" && truncated != 1 {
-			t.Errorf("truncated: %d, ожидается 1", truncated)
+		if truncated != v.truncated[profile] {
+			t.Errorf("%s: truncated %d, ожидается %d", profile, truncated, v.truncated[profile])
 		}
 	}
 	pass(newRouter(), "inceptron-fp8", RolePrimary)
@@ -605,7 +619,7 @@ func TestProbeV3ReplayHTTP(t *testing.T) {
 	if _, err := audit.Verify(f, keys, audit.VerifyOptions{Stats: &st}); err != nil {
 		t.Fatal(err)
 	}
-	if st.Records != 960 || st.RouterEvents != 3 { // state_created + 2 перехода
-		t.Errorf("цепочка: %+v, ожидается 960 записей и 3 события (якорь и 2 перехода)", st)
+	if st.Records != uint64(2*v.cases) || st.RouterEvents != 3 { // state_created + 2 перехода
+		t.Errorf("цепочка: %+v, ожидается %d записей и 3 события (якорь и 2 перехода)", st, 2*v.cases)
 	}
 }

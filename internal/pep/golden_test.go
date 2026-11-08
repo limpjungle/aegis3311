@@ -205,7 +205,7 @@ func TestGoldenSetPEP(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 480}, {"dev", 113}} {
+	}{{"probe", 595}, {"dev", 138}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad, checked, unavailable := 0, 0, 0
 			fail := func(format string, a ...any) {
@@ -264,12 +264,12 @@ func TestGoldenSetPEP(t *testing.T) {
 func TestRefAnswersNoPanic(t *testing.T) {
 	eng := newEngine(t)
 	cases := map[string]goldenCase{}
-	for _, c := range loadGolden(t, "probe", 480) {
+	for _, c := range loadGolden(t, "probe", 595) {
 		cases[c.ID] = c
 	}
-	// эталоны v2 (архив) и v3 прогоняются на состояниях активного набора по id
+	// эталоны v2, v3 (архив) и v4 прогоняются на состояниях активного набора по id (v4 — надмножество v2 и v3)
 	var files []string
-	for _, ver := range []string{"v2", "v3"} {
+	for _, ver := range []string{"v2", "v3", "v4"} {
 		fs, _ := filepath.Glob(filepath.Join(goldenDir, "refs/*/probe-"+ver+"-*.jsonl"))
 		t.Logf("эталонов %s: %d", ver, len(fs))
 		files = append(files, fs...)

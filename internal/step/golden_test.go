@@ -38,7 +38,7 @@ type GoldenCase struct {
 }
 
 // readGolden проверяет sha256 набора по manifest.json и возвращает кейсы (файлы открываются только на чтение).
-// Имя вида "probe-v4" — набор кандидата из manifest.staged, иначе — активный набор.
+// Имя вида "probe-v3" — архивный набор v3 из manifest.sets_history, иначе — активный набор (v4 с 08.11.2026).
 func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 	t.Helper()
 	mb, err := os.ReadFile(filepath.Join(goldenDir, "data/manifest.json"))
@@ -51,17 +51,23 @@ func readGolden(t *testing.T, set string, wantCases int) []GoldenCase {
 		Cases  int    `json:"cases"`
 	}
 	var m struct {
-		Sets   map[string]entry `json:"sets"`
-		Staged struct {
-			Sets map[string]entry `json:"sets"`
-		} `json:"staged"`
+		Sets    map[string]entry `json:"sets"`
+		History []struct {
+			SetFormat string           `json:"set_format"`
+			Sets      map[string]entry `json:"sets"`
+		} `json:"sets_history"`
 	}
 	if err := json.Unmarshal(mb, &m); err != nil {
 		t.Fatal(err)
 	}
 	sets, name := m.Sets, set
-	if n, ok := strings.CutSuffix(set, "-v4"); ok {
-		sets, name = m.Staged.Sets, n
+	if n, ok := strings.CutSuffix(set, "-v3"); ok {
+		sets, name = nil, n
+		for _, h := range m.History {
+			if h.SetFormat == "v3" {
+				sets = h.Sets
+			}
+		}
 	}
 	ms, ok := sets[name]
 	if !ok {
@@ -141,7 +147,7 @@ func TestGoldenPodsConsistent(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 480}, {"dev", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
+	}{{"probe", 595}, {"dev", 138}, {"probe-v3", 480}, {"dev-v3", 113}} {
 		t.Run(set.name, func(t *testing.T) {
 			for _, c := range readGolden(t, set.name, set.cases) {
 				in := c.Input
@@ -175,7 +181,7 @@ func TestGoldenSetCrossCheck(t *testing.T) {
 	for _, set := range []struct {
 		name  string
 		cases int
-	}{{"probe", 480}, {"dev", 113}, {"probe-v4", 595}, {"dev-v4", 138}} {
+	}{{"probe", 595}, {"dev", 138}, {"probe-v3", 480}, {"dev-v3", 113}} {
 		t.Run(set.name, func(t *testing.T) {
 			bad := 0
 			for _, c := range readGolden(t, set.name, set.cases) {

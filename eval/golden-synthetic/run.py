@@ -241,6 +241,8 @@ def check_integrity(set_name, allow_mismatch, base=BASE, staged=False):
     mbytes = read("data/manifest.json")
     try:
         manifest = json.loads(mbytes.decode("utf-8"))
+        if staged and "staged" not in manifest:
+            raise IntegrityError("manifest has no staged candidate (--staged needs manifest.staged)")
         track = manifest["staged"] if staged else manifest
         entry = track["sets"][set_name]
         files = {"set": (entry["file"], entry["sha256"]), "prompt": (track["prompt"]["file"], track["prompt"]["sha256"]),

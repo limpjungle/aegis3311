@@ -24,14 +24,17 @@ func realMasker(t testing.TB) *masker.Masker {
 	return m
 }
 
-// Эталоны probe-v3 воспроизводятся побайтно и с реальным маскировщиком: на «чистых» данных он ничего не меняет.
-func TestProbeV3ReproducibleRealMasker(t *testing.T) {
-	cases := loadProbeV3(t)
+// Эталоны проб воспроизводятся побайтно и с реальным маскировщиком: на «чистых» данных он ничего не меняет.
+func TestProbeV3ReproducibleRealMasker(t *testing.T) { testProbeReproducibleRealMasker(t, probeV3) }
+func TestProbeV4ReproducibleRealMasker(t *testing.T) { testProbeReproducibleRealMasker(t, probeV4) }
+
+func testProbeReproducibleRealMasker(t *testing.T, v probeVersion) {
+	cases := v.load(t)
 	ctx := context.Background()
 	for _, pp := range probeProfiles {
-		rf := loadRefs(t, pp.name)
+		rf := loadRefs(t, v, pp.name)
 		m := realMasker(t)
-		rg := newRig(t, m, &stubTransport{}, "", nil)
+		rg := newRigAssets(t, v.assets(t), m, &stubTransport{}, "", nil)
 		for _, c := range cases {
 			req, _ := caseRequest(t, c)
 			p, err := rg.r.Prepare(ctx, req, pp.role)

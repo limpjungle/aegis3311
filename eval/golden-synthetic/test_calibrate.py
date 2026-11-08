@@ -2,6 +2,7 @@
 """Тесты calibrate.py на синтетических прогонах (без сети). Запуск: python3 -m unittest -v test_calibrate"""
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -49,7 +50,7 @@ class CalibTestCase(unittest.TestCase):
         json.dump(meta, open(path + ".meta.json", "w"))
 
     def write_ref(self):
-        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, "probe-v3-ref.jsonl"), self.oracle,
+        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, f"{self.tag}-ref.jsonl"), self.oracle,
                          self.meta("reference", "REF"))
 
     def add_run(self, n_wrong=0, n_trunc=0, **meta_over):
@@ -77,6 +78,10 @@ class CalibTestCase(unittest.TestCase):
         self.out = out.getvalue()
         return code
 
+    def pp(self, x):
+        """Число кейсов, дающее отклонение не меньше x п. п. на текущем наборе (тесты не привязаны к размеру пробы)."""
+        return math.ceil(x * len(self.cases) / 100)
+
     def state(self):
         return json.load(open(calibrate.state_path(self.base, PROFILE, self.tag)))
 
@@ -97,7 +102,7 @@ class TestPreFreeze(CalibTestCase):
         self.assertEqual(st["points"][0]["verdict"], "OK")
 
     def test_more_than_5pp_is_downgrade(self):
-        self.add_run(n_wrong=30)   # 6,25 п. п.
+        self.add_run(n_wrong=self.pp(6.25))
         self.assertEqual(self.cmd("update"), 20, self.out)
         self.assertIn("pre-freeze", self.out)
 
@@ -105,7 +110,7 @@ class TestPreFreeze(CalibTestCase):
         self.add_run(n_trunc=0)
         self.cmd("update")
         st = self.state()
-        point = {"run_id": "X", "n_cases": 480, "metrics": dict(st["points"][0]["metrics"], truncated_share=7.0)}
+        point = {"run_id": "X", "n_cases": len(self.cases), "metrics": dict(st["points"][0]["metrics"], truncated_share=7.0)}
         findings = calibrate.judge(st, point)
         self.assertEqual([f[0] for f in findings if f[1] == "truncated_share"], ["ALERT"])
 
@@ -137,22 +142,22 @@ class TestFreeze(CalibTestCase):
         self.assertEqual((da["mean"], da["sigma"], da["threshold_pp"]), (100.0, 0.0, 1.5))
         self.add_run(n_wrong=1)                   # −0,21 п. п.: в пределах предела
         self.assertNotEqual(self.cmd("update"), 20, self.out)
-        self.add_run(n_wrong=8)                   # −1,67 п. п.: за пределом
+        self.add_run(n_wrong=self.pp(1.67))       # −1,67 п. п.: за пределом
         self.assertEqual(self.cmd("update"), 20, self.out)
 
 
 class TestAfterFreeze(CalibTestCase):
     def test_three_sigma_downgrade(self):
         self.calibrate_flat()
-        self.add_run(n_wrong=15)
+        self.add_run(n_wrong=self.pp(3.1))
         self.assertEqual(self.cmd("update"), 20, self.out)
         self.assertIn("|z|", self.out)
 
     def test_two_consecutive_beyond_two_sigma_alert(self):
-        self.calibrate_flat(wrong=(0,))           # σ_eff = 0,5 п. п.; 2σ = 1 п. п. ≈ 5 кейсов, 3σ ≈ 7
-        self.add_run(n_wrong=6)                   # −1,25 п. п.: за 2σ, но не за 3σ
+        self.calibrate_flat(wrong=(0,))           # σ_eff = 0,5 п. п.; 2σ = 1 п. п., 3σ = 1,5 п. п.
+        self.add_run(n_wrong=self.pp(1.25))       # −1,25 п. п.: за 2σ, но не за 3σ
         self.cmd("update")
-        self.add_run(n_wrong=6)
+        self.add_run(n_wrong=self.pp(1.25))
         code = self.cmd("update")
         self.assertEqual(code, 10, self.out)
         self.assertIn("two consecutive", self.out)
@@ -161,7 +166,7 @@ class TestAfterFreeze(CalibTestCase):
         self.calibrate_flat(wrong=(0,))
         codes = []
         for _ in range(6):
-            self.add_run(n_wrong=4)               # −0,83 п. п. — меньше 2σ_eff, но устойчиво
+            self.add_run(n_wrong=self.pp(0.83))   # −0,83 п. п. — меньше 2σ_eff, но устойчиво
             codes.append(self.cmd("update"))
         self.assertIn(10, codes)
         self.assertIn("EWMA", json.dumps(self.state()["points"][-1]["findings"]))
@@ -173,7 +178,7 @@ class TestReferenceGuard(CalibTestCase):
         self.cmd("update")
         rows = json.loads(json.dumps(self.oracle))
         rows[0]["answer"] = selftest.answer("other", "unknown", "none", selftest.blank("v2"))
-        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, "probe-v3-ref.jsonl"), rows, self.meta("reference", "REF"))
+        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, f"{self.tag}-ref.jsonl"), rows, self.meta("reference", "REF"))
         self.assertEqual(self.cmd("update"), 2)
 
 
@@ -188,7 +193,7 @@ class TestStatePerSet(CalibTestCase):
 
     def test_no_reference_on_other_set_sha(self):
         # эталон есть, но записан на другом наборе (v2)
-        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, "probe-v3-ref.jsonl"), self.oracle,
+        self.write_jsonl(os.path.join(self.base, "refs", PROFILE, f"{self.tag}-ref.jsonl"), self.oracle,
                          self.meta("reference", "REF", hashes={**self.hashes, "set": "0" * 64}))
         self.assertEqual(self.cmd("update"), 10, self.out)
         self.assertIn("no_reference", self.out)
@@ -208,9 +213,9 @@ class TestStatePerSet(CalibTestCase):
         self.assertEqual(self.cmd("update"), 0, self.out)
         self.assertEqual(open(legacy, "rb").read(), archive)
         self.assertEqual(len(self.state()["points"]), 1)
-        self.assertTrue(os.path.exists(os.path.join(self.base, "calibration", f"{PROFILE}-probe-v3.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.base, "calibration", f"{PROFILE}-{self.tag}.json")))
         self.cmd("status")
-        self.assertIn("probe-v3", self.out)
+        self.assertIn(self.tag, self.out)
 
     def test_status_mentions_archive(self):
         legacy = calibrate.state_path(self.base, PROFILE, "probe-v2")

@@ -5,7 +5,8 @@
 Только стандартная библиотека. Все данные синтетические, без ПДн (класс internal).
 
 Пример:
-    python3 generate.py --set probe --out data/probe-v3.jsonl                # набор v3 (по умолчанию)
+    python3 generate.py --set probe --out data/probe-v4.jsonl                # набор v4 (по умолчанию)
+    python3 generate.py --set probe --format v3 --out data/probe-v3.jsonl    # воспроизвести набор v3 байт-в-байт
     python3 generate.py --set probe --format v2 --out data/probe-v2.jsonl    # воспроизвести набор v2 байт-в-байт
     python3 generate.py --set probe --format v1 --out data/probe-v1.jsonl    # воспроизвести набор v1
 
@@ -13,7 +14,7 @@
 (database, analysis_run) вычисляет детерминированное правило шага каталога (функции step_*), а модель
 выбирает только действие и дискретные параметры: scope, pod_name, reason, parameter.
 
-Набор v4 (кандидат, решение 08.11.2026) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
+Набор v4 (активен с 08.11.2026, golden-set.md §15) — надмножество v3: все кейсы v3 входят с тем же id и побайтно тем же
 input/expected (отличается generator_version), добавлены кейсы COMPOSITION_V4_EXTRA (previous_analysis_run, verdict
 running, analysis_run = null, threshold-анализ, живой Bake, пропуски в сериях). Формат ответа v2, схема та же.
 
@@ -29,7 +30,7 @@ import random
 
 GENERATOR_VERSIONS = {"v1": "1.0.0", "v2": "2.0.0", "v3": "3.0.0", "v4": "4.0.0"}
 ANSWER_FORMAT = {"v1": "v1", "v2": "v2", "v3": "v2", "v4": "v2"}  # формат ответа модели; v3 отличается только входом
-FORMAT = "v3"  # переключается в build()
+FORMAT = "v4"  # переключается в build()
 
 # Состав наборов: (класс, вариант, слайс, количество)
 COMPOSITION = {
@@ -790,7 +791,7 @@ for c, v in [("RB-003", "prev_run_degradation_no_current"), ("RB-003", "prev_run
 GENERATORS[("RB-006", "load_growth_series_gaps")] = lambda rng: gen_capacity_v4(rng, "load_growth_series_gaps")
 
 
-def build(set_name, seed, fmt="v3"):
+def build(set_name, seed, fmt="v4"):
     global FORMAT
     FORMAT = fmt
     cases = []
@@ -820,7 +821,7 @@ def main():
     ap.add_argument("--set", choices=sorted(COMPOSITION), required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v3")
+    ap.add_argument("--format", choices=sorted(GENERATOR_VERSIONS), default="v4")
     args = ap.parse_args()
     seed = args.seed if args.seed is not None else DEFAULT_SEED[args.set]
     cases = build(args.set, seed, args.format)

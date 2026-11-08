@@ -289,7 +289,13 @@ func TestRouteOffAndBudget(t *testing.T) {
 	}
 	applyOK(t, res)
 	rg.r.bud.cfg.IncidentTokens = 1 << 40
-	rg.r.bud.cfg.ServiceDayTokens = 8200
+	// Сутки вмещают ровно один резерв (est + max_tokens), но не второй после расхода 150 токенов первого вызова;
+	// лимит от размера запроса, а не числом: размер зависит от активного промпта.
+	prep, err := rg.r.Prepare(ctx, req, RolePrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rg.r.bud.cfg.ServiceDayTokens = int64(prep.EstInputTokens+prep.MaxTokens) + 100
 	res, _ = rg.r.Route(ctx, req)
 	if res.Outcome != "sent" {
 		t.Fatalf("%+v", res)

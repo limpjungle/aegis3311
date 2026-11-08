@@ -19,7 +19,7 @@
 
 ## 2. Состав
 
-Набор `probe` — **480 кейсов**. Этого достаточно, чтобы граница 3σ ежедневной пробы была ≈ 5 п. п. (§6.3 архитектуры).
+Набор `probe` v3 — **480 кейсов**. Этого достаточно, чтобы граница 3σ ежедневной пробы была ≈ 5 п. п. (§6.3 архитектуры). С 08.11.2026 активен набор v4 — надмножество v3: probe-v4 = 595, dev-v4 = 138 (§15.2); таблицы ниже — состав v3, входящий в v4 целиком.
 
 | Класс | Варианты | Кейсов |
 |---|---|---|
@@ -175,7 +175,7 @@
 
 Скрипт `eval/golden-synthetic/calibrate.py` реализует правила §6.3 архитектуры:
 
-- `update` берёт новые полные прогоны `probe` профиля с тем же набором, промптом, схемой и параметрами генерации, что у эталона, считает метрики против эталона и добавляет точку в `calibration/<profile>-<set_tag>.json` (`set_tag` — имя файла набора без расширения, например `probe-v3`; состояние набора probe-v2 — архив в прежнем `calibration/<profile>.json`, не меняется). Нет эталона для текущего набора — вердикт ALERT (`no_reference`), код выхода 10, состояние не пишется;
+- `update` берёт новые полные прогоны `probe` профиля с тем же набором, промптом, схемой и параметрами генерации, что у эталона, считает метрики против эталона и добавляет точку в `calibration/<profile>-<set_tag>.json` (`set_tag` — имя файла набора без расширения, например `probe-v4`; состояние набора probe-v2 — архив в прежнем `calibration/<profile>.json`, не меняется). Нет эталона для текущего набора — вердикт ALERT (`no_reference`), код выхода 10, состояние не пишется;
 - до заморозки базы: отклонение больше 5 п. п. от уровня эталона → DOWNGRADE (проба ≥ 460 кейсов);
 - `freeze` (≥ 20 точек, по утверждению) фиксирует среднее и σ; дальше порог понижения = max(3σ, 1,5 п. п.), двусторонний; EWMA (λ = 0,2, L = 2,7) и две точки подряд за 2σ — ALERT; повторная заморозка только с `--force`;
 - контролируются `decision_agreement` (основная), `root_cause_match`, `admissible`, `harmful`; доля обрезанных ответов — только ALERT.
@@ -222,11 +222,11 @@
 - **dev v3:** Inceptron — 99,1% по первопричине и допустимости (1 обрезанный ответ из 113), Wafer — 100%; вредных 0 у обоих. Прогоны: `runs/inceptron-fp8/dev-20261107T072610Z-c5da.jsonl`, `runs/wafer-nvfp4/dev-20261107T073018Z-eec7.jsonl`.
 - Всего на запись (dev + probe, оба endpoint'а) — $0,69.
 - **Go-роутер воспроизводит запросы эталонов:** `internal/llmrouter` `TestProbeV3Reproducible` — для всех 480 кейсов × 2 профиля совпадают `request_sha256` и `est_input_tokens`; `TestProbeV3ReplayHTTP` — статусы ответов и decision record'ы (через httptest на loopback, без сети и ключей); `TestProbeV3MetaMatchesAssets` — хеши конфигурации, промпта и схемы из `.meta.json` эталонов. Смена `profiles.json`, промпта или схемы ломает эти тесты: нужны новые эталоны.
-- Калибровка v3 начинается с первого ежедневного прогона 08.11.2026 (00:00 МСК); freeze — не раньше 20 точек, ориентировочно 27.11.2026.
+- Калибровка v3 прекращена 08.11.2026 переключением на v4 (§15.5), не набрав ни одной точки: единственный ежедневный прогон на v3 (07.11.2026 21:06 UTC) прервался — прогон ушёл в фон, сессия агента завершилась, а при возобновлении упёрлась в 5-часовой лимит; в `probe-results` ничего не записано. Freeze на v3 не делается.
 
 ### 13.2 Точки калибровки v3
 
-Полные значения — `calibration/<profile>-probe-v3.json`. Пока точек нет.
+Точек нет: калибровка v3 прекращена 08.11.2026 (§15.5) до первой записанной точки (§13.1).
 
 | № | Дата прогона (UTC) | Профиль | run_id | Совпадение решения | Первопричина | Допустимость | Вредные | Обрезанные | Стоимость | Вердикт |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -249,9 +249,9 @@
 - **Числа baseline/canary.** В наборе в фазе `Bake` они целые, в живых данных всегда дробные.
 - **Поды и события.** `OOMKilled` синтезируется из `lastState.terminated` контейнера (в Kubernetes это не Event); `reason` событий ограничен allowlist.
 
-## 15. Промпт v4 и набор v4 (кандидат, 08.11.2026)
+## 15. Промпт v4 и набор v4 (активны с 08.11.2026)
 
-**Статус:** кандидат (`staged` в `data/manifest.json`). Активными остаются промпт `system-v3.md` и набор v3; `calibrate.py`, `LoadAssets` и роутер работают с ними. v4 меняет две переменные сразу (промпт и набор), потому что новые правила нельзя проверить на кейсах, где соответствующих ситуаций нет.
+**Статус:** активны с 08.11.2026 (§15.8): промпт `system-v4.md` и набор v4 — верхний уровень `data/manifest.json`; `calibrate.py`, `LoadAssets`, роутер и intake работают с ними. Промпт и наборы v3 — в `prompt_history` / `sets_history`. До переключения v4 был кандидатом (`staged`). v4 меняет две переменные сразу (промпт и набор), потому что новые правила нельзя проверить на кейсах, где соответствующих ситуаций нет.
 
 **Зачем.** Сверка с живым intake (§14) выявила входы, которых нет в v3 и о которых промпт v3 ничего не говорит. Самый опасный: `previous_analysis_run` с вердиктом `degradation` при отсутствии анализа текущей ревизии (`rollout.analysis_run = null`). Модель v3 могла принять прежнюю деградацию за результат текущего канарея и откатить здоровую ревизию. При этом `step.Available` предлагает `rollout.abort_and_rollback` и без текущего анализа (`computed.analysis_run = ""`; `TestAssemblePreviousAnalysisRunNotInTargetState`), так что защита от такого отката пока только в промпте.
 
@@ -286,23 +286,23 @@
 | `bake_degradation_live` (core) | 10 / 2 | живой Bake: вес 100, `canary_revision = null`, `degradation`, threshold p99 с дробным значением | RB-003, `release_regression`; откат `bake_degradation`; вредно scale_in, restart |
 | `load_growth_series_gaps` (confuser) | 10 / 2 | как `load_growth`, но 2–4 `null` в серии rps и CPU (последние 5 значений целы) | RB-006, `load_growth`; допустимо scale_out; вредно scale_in, restart |
 
-`previous_analysis_run` присутствует только при `analysis_run = null` в фазе Progressing/Bake (как после `Sanitize`); `revision` прежнего анализа — ревизия stable или старше (60%), `null` (20%) или другое целое (20%). Во всех кейсах без анализа текущей ревизии `rollout.abort_and_rollback` остаётся в `allowed_actions` с `computed.analysis_run = ""` (зеркало `step.Available`; кросс-проверка `TestGoldenSetCrossCheck/probe-v4`).
+`previous_analysis_run` присутствует только при `analysis_run = null` в фазе Progressing/Bake (как после `Sanitize`); `revision` прежнего анализа — ревизия stable или старше (60%), `null` (20%) или другое целое (20%). Во всех кейсах без анализа текущей ревизии `rollout.abort_and_rollback` остаётся в `allowed_actions` с `computed.analysis_run = ""` (зеркало `step.Available`; кросс-проверка `TestGoldenSetCrossCheck/probe`).
 
 **Разметка `prev_run_success_current_degrading` (решение 08.11.2026):** допустим только `recommend`; откат не допустим и не вреден. Вердикта текущей ревизии нет, поэтому откат без человека не оправдан, но внешние метрики действительно ухудшились, и «ничего не делать» тоже неверно.
 
 ### 15.3 Команды
 
 ```bash
-python3 generate.py --set probe --format v4 --out data/probe-v4.jsonl     # sha256 — как в manifest.staged
-python3 generate.py --set dev --format v4 --out data/dev-v4.jsonl
-python3 run.py --profile inceptron-fp8 --staged --set dev                    # кандидат: набор, промпт и схема из manifest.staged (~$0,15 на оба профиля)
-python3 run.py --profile inceptron-fp8 --staged --set probe --reference      # эталон -> refs/<profile>/probe-v4-<дата>-<run_id>.jsonl (~$0,55 + $0,13)
-python3 run.py --profile inceptron-fp8 --staged --set probe --dry-run --emit-requests requests/inceptron-fp8/probe-v4.jsonl   # без ключа и сети
+python3 generate.py --set probe --out data/probe-v4.jsonl                 # v4 — формат по умолчанию; sha256 — как в manifest
+python3 generate.py --set dev --out data/dev-v4.jsonl
+python3 run.py --profile inceptron-fp8 --set dev                             # (~$0,15 на оба профиля)
+python3 run.py --profile inceptron-fp8 --set probe --reference               # эталон -> refs/<profile>/probe-v4-<дата>-<run_id>.jsonl (~$0,55 + $0,13)
+python3 run.py --profile inceptron-fp8 --set probe --dry-run --emit-requests /tmp/r.jsonl   # без ключа и сети
 python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --by-variant
 python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <эталон v3> --ref-ids-only
 ```
 
-Проверки без сети: `python3 -B -m unittest -v test_set_v4` (детерминизм, хеши `staged`, v3 внутри v4, инварианты, разметка, фикстуры запросов), `selftest.py`; Go — `TestProbeV4RequestsMatchRunner` (запросы `Prepare` совпадают с `request_sha256` и `est_input_tokens` из `requests/<profile>/probe-v4.jsonl`, то есть с выводом `run.py --staged --dry-run`), `TestIntakeReproducesRunnerRequestsV4` (то же для запросов, собранных intake), `TestGoldenSetCrossCheck/probe-v4`, `TestAssembleMatchesGolden` (для v4 требует покрытия: `previous_analysis_run` в Progressing и Bake, вердикт `running`, `null` в сериях, живой Bake). Пока эталонов v4 нет, фикстура запросов — единственный независимый эталон хешей. Эталоны и пробу v3 (`TestProbeV3*`) закрепляют промпт и схему v3 через `openrouter.LoadAssetsPinned`; `TestActiveAssetsHaveReferences` не даёт сделать активным промпт или набор без замороженных эталонов на обоих профилях.
+Проверки без сети: `python3 -B -m unittest -v test_set_v4` (детерминизм, хеши, v3 внутри v4, инварианты, разметка, запросы `run.py --dry-run` против `request_sha256` и `est_input_tokens` эталонов probe-v4, архив v3, отказ `--staged` без кандидата), `selftest.py`; Go — `TestProbeV4Reproducible` / `TestProbeV4ReproducibleRealMasker` (запросы `Prepare` совпадают с эталонами probe-v4 по `request_sha256` и `est_input_tokens`), `TestProbeV4ReplayHTTP` (ответы эталонов через httptest на активных ассетах, статусы и decision record'ы, 1190 записей в цепочке), `TestProbeV4MetaMatchesAssets` (хеши набора, промпта, схемы и конфигурации в `.meta.json`), `TestIntakeReproducesProbeRefs/v4` (то же для запросов, собранных intake), `TestGoldenSetCrossCheck/probe`, `TestAssembleMatchesGolden`. Фикстура запросов `requests/<profile>/probe-v4.jsonl` удалена: её роль выполняют эталоны (хеши совпадали на всех 595 × 2 кейсах). Эталоны v3 (`TestProbeV3*`, `TestIntakeReproducesProbeRefs/v3`) закрепляют промпт v3 через `openrouter.LoadAssetsPinned`; `TestActiveAssetsHaveReferences` не даёт сделать активными промпт и набор без замороженных эталонов на обоих профилях (в том числе смешать промпт v3 с набором v4).
 
 ### 15.4 Критерии переключения
 
@@ -317,7 +317,7 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 
 Проба и роутер переходят на v4 одновременно, одним коммитом, после записи эталонов v4 и утверждения отчёта (ориентировочно 09–10.11.2026). До этого активны v3: роутер, ежедневная проба и калибровка v3 работают как раньше, v4 существует только как кандидат. Последствия:
 
-- **Калибровка.** Замороженная база v3 не набирается дальше: смена набора и промпта — это новая калибровка с нуля (§5). Точки v3 с 08.11.2026 (§13.2) остаются архивом. **Freeze калибровки сдвигается** с ориентировочных 27.11.2026 на **≈ 29–30.11.2026** (20 точек на v4 от 10.11), старт shadow — **на 2–3 дня**.
+- **Калибровка.** Замороженная база v3 не набирается дальше: смена набора и промпта — это новая калибровка с нуля (§5). Точки v3 с 08.11.2026 (§13.2) остаются архивом (по факту точек v3 нет, §13.1). **Freeze калибровки сдвигается** с ориентировочных 27.11.2026 на **≈ 29–30.11.2026** (20 точек на v4 от 10.11), старт shadow — **на 2–3 дня**.
 - **Коммит переключения** (отдельный): `staged` → верхний уровень manifest, v3 → `sets_history` / `prompt_history`; `--format` по умолчанию `v4`; `TestProbeV4Reproducible` / `TestProbeV4ReplayHTTP` по эталонам v4 вместо фикстуры запросов; правки `architecture.md` §6.3, `eval.md`, `plan-mvp.md` (срок freeze, размер пробы, состав). Сейчас эти документы не меняются.
 
 ### 15.6 Эталоны и калибровка v4
@@ -337,7 +337,7 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 | RB-004 без анализа решается откатом (`crashloop_no_current_analysis`) | откат 10/10 | откат 10/10 | выполнен |
 | Подмножество v3 (480): первопричина и допустимость не ниже эталона v3 более чем на 1 п. п. | 100,0% / 100,0% (эталон v3: 99,8% / 99,8%); совпадение решений с v3 98,8% (RB-003 95,9%) | 100,0% / 99,8% (эталон v3: 99,8% / 99,8%); совпадение решений 99,6% | выполнен |
 
-Замечания: Wafer в 3 кейсах `prev_run_degradation_no_current` назвал класс `other` вместо `RB-003` при верной первопричине (`no_user_impact`) и допустимом действии `none` (class_match варианта 90%). Оба endpoint'а сообщают модель как `z-ai/glm-5.3-flash` без суффикса даты (как и в эталонах v3). Переключение (§15.4, последний шаг) — отдельным коммитом после утверждения отчёта.
+Замечания: Wafer в 3 кейсах `prev_run_degradation_no_current` назвал класс `other` вместо `RB-003` при верной первопричине (`no_user_impact`) и допустимом действии `none` (class_match варианта 90%). Оба endpoint'а сообщают модель как `z-ai/glm-5.3-flash` без суффикса даты (как и в эталонах v3). Отчёт утверждён оператором 08.11.2026; переключение — §15.8.
 
 | № | Дата прогона (UTC) | Профиль | run_id | Совпадение решения | Первопричина | Допустимость | Вредные | Обрезанные | Стоимость | Вердикт |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -346,3 +346,13 @@ python3 score.py --cases data/probe-v4.jsonl --pred <эталон v4> --ref <э�
 
 - Argo `Error` → `degradation` в `toAnalysisRun`: для модели это неотличимо от провала метрики и ведёт к откату. Решать в intake (отдельный вердикт или `inconclusive`), в промпт не закладывается.
 - PEP/исполнитель откатов с `computed.analysis_run = ""` вне этой задачи: промпт запрещает такой откат для RB-003, но блокировка на стороне платформы нужна отдельно.
+
+### 15.8 Переключение на v4 (08.11.2026)
+
+Выполнено отдельным коммитом после утверждения отчёта §15.6 (решение §15.5: проба и роутер переходят вместе):
+
+- `data/manifest.json`: набор, промпт и `generator_version` v4 — на верхнем уровне (`set_format: v4`), блока `staged` нет; наборы v3 — в `sets_history`, промпт v3 — в `prompt_history` (`until: 2026-11-08`). Схема ответа (`answer.schema-v2.json`) не менялась.
+- `generate.py`: `--format` по умолчанию `v4`; `run.py --staged` без кандидата — ошибка целостности (код 2).
+- Роутер (`LoadAssets`) и intake берут промпт v4; ежедневная проба идёт на probe-v4 (595 кейсов, ≈ $0,75 в сутки на оба endpoint'а).
+- **Калибровка v4 — с нуля** в `calibration/<profile>-probe-v4.json`; эталоны — probe-v4 из §15.6. Первая точка — первый ежедневный прогон после попадания коммита в `main`. Freeze — не раньше 20 точек, ориентировочно ≈ 28–30.11.2026; старт shadow сдвигается на 2–3 дня.
+- Тесты: `TestProbeV4Reproducible`, `TestProbeV4ReproducibleRealMasker`, `TestProbeV4ReplayHTTP`, `TestProbeV4MetaMatchesAssets` по эталонам v4 вместо фикстуры запросов; `TestRouteOffAndBudget` считает лимит суток от размера запроса, а не числом под промпт v3.

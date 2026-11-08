@@ -155,12 +155,13 @@ class TestSetV3(unittest.TestCase):
                         self.assertIn(m["labels"]["pod"], pods, c["id"])
 
     def test_stored_v3_files_match_manifest(self):
+        hist3 = next(h for h in self.manifest["sets_history"] if h.get("set_format") == "v3")
         for set_name in ("probe", "dev"):
-            entry = self.manifest["sets"][set_name]
+            entry = hist3["sets"][set_name]
             self.assertEqual(entry["file"], f"data/{set_name}-v3.jsonl")
             raw = open(os.path.join(HERE, entry["file"]), "rb").read()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
-        self.assertEqual(self.manifest["set_format"], "v3")
+        self.assertEqual(self.manifest["set_format"], "v4")
 
 
 if __name__ == "__main__":

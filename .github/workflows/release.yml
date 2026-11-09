@@ -1,0 +1,129 @@
+# Релиз по тегу v*: только коммит из main, для которого есть подписанный policy bundle; бинари linux/amd64, SBOM CycloneDX,
+# SHA256SUMS, провенанс SLSA (Sigstore, actions/attest-build-provenance) и SBOM-аттестация. Образов нет: подпись образов
+# Sigstore cosign отложена. Проверка артефактов — docs/07-governance/ci-four-eyes.md.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Тег на main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Тег $GITHUB_REF_NAME не на main: релиз отклонён"
+            exit 1
+          fi
+      - name: Подписанный policy bundle этого коммита
+        run: |
+          set -euo pipefail
+          mkdir -p dist "$RUNNER_TEMP/bundles"
+          # Все страницы релизов (без лимита), номера по убыванию, не больше 20 последних.
+          mapfile -t tags < <(gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[] | select(.draft | not) | .tag_name | select(test("^policy-bundle-[0-9]+$"))' \
+            | sort -t- -k3 -n -r | head -n 20)
+          found=""
+          for tag in "${tags[@]}"; do
+            gh release download "$tag" --repo "$REPO" -p policy-bundle.json -D "$RUNNER_TEMP/bundles/$tag"
+            if go run ./cmd/aegis-ci bundle verify -in "$RUNNER_TEMP/bundles/$tag/policy-bundle.json" -keys deploy/policy-bundle/keys.json; then
+              found="$tag"
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "::error::Политики этого коммита не подписаны: нет policy bundle, подходящего к содержимому"
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/bundles/$found/policy-bundle.json" dist/policy-bundle.json
+      - name: go vet
+        run: go vet ./...
+      - name: Бинари и SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin dist/sbom
+          for n in aegis-intake aegis-llmrouter aegis-pep aegis-audit aegis-killswitch; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -buildid=" -o "dist/bin/$n" "./cmd/$n"
+            go run ./cmd/aegis-ci sbom -bin "dist/bin/$n" -name "$n" -out "dist/sbom/$n.cdx.json"
+          done
+          (cd dist/bin && sha256sum -- * > ../SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release # ручное подтверждение публикации; разрешены только теги v*
+    permissions:
+      contents: write # релиз
+      id-token: write # провенанс (Sigstore)
+      attestations: write
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+      - name: Провенанс бинарей
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'dist/bin/*'
+      - name: SBOM aegis-intake
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/bin/aegis-intake
+          sbom-path: dist/sbom/aegis-intake.cdx.json
+      - name: SBOM aegis-llmrouter
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/bin/aegis-llmrouter
+          sbom-path: dist/sbom/aegis-llmrouter.cdx.json
+      - name: SBOM aegis-pep
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/bin/aegis-pep
+          sbom-path: dist/sbom/aegis-pep.cdx.json
+      - name: SBOM aegis-audit
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/bin/aegis-audit
+          sbom-path: dist/sbom/aegis-audit.cdx.json
+      - name: SBOM aegis-killswitch
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/bin/aegis-killswitch
+          sbom-path: dist/sbom/aegis-killswitch.cdx.json
+      - name: Релиз
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/bin/* dist/sbom/* dist/SHA256SUMS dist/policy-bundle.json \
+            --repo "$REPO" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes "Бинари linux/amd64, SBOM CycloneDX, SHA256SUMS и policy bundle. Проверка: docs/07-governance/ci-four-eyes.md."

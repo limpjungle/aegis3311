@@ -106,3 +106,7 @@ latency_ms, latency_total_ms, attempts, http_status, finish_reason, request_sha2
 ## Правило для раннера
 
 Модели отправляется **только поле `input`** кейса. Поля `id`, `variant`, `slice`, `meta` и `expected` содержат ответ и в запрос не попадают.
+
+## Подпись изменений
+
+Реестр LLM (`profiles.json`), промпт, схема ответа и `data/manifest.json` встроены в бинарь агента и входят в подписанный policy bundle (`llm_assets_digest`). Изменения идут через PR с двумя одобрениями из разных групп, для `profiles.json` обязательна группа `security` ([ci-four-eyes.md](../../docs/07-governance/ci-four-eyes.md)).

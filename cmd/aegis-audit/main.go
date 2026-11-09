@@ -2,9 +2,13 @@
 //
 //	aegis-audit keygen     -priv KEY.pem -pub KEY.pub.pem
 //	aegis-audit append     -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] < record.json | event.json
-//	aegis-audit verify     -chain FILE -pub PUB.pem [-pub ...] [-id CHAIN_ID] [-anchor DIR] [-integrity-only]
-//	aegis-audit checkpoint -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] -anchor DIR
+//	aegis-audit verify     -chain FILE -pub PUB.pem [-pub ...] [-id CHAIN_ID] [-anchor DIR | -anchor-config FILE] [-integrity-only]
+//	aegis-audit checkpoint -chain FILE -id CHAIN_ID -key KEY.pem [-pub PUB.pem ...] (-anchor DIR | -anchor-config FILE)
 //	aegis-audit version
+//
+// -anchor-config FILE — JSON routersvc.AnchorConfig (kind "s3" | "dir", как audit.anchor в конфигурации сервиса); для s3 ключи
+// доступа берутся из AEGIS_AUDIT_S3_ACCESS_KEY_ID_FILE, AEGIS_AUDIT_S3_SECRET_KEY_FILE (и необязательно
+// AEGIS_AUDIT_S3_SESSION_TOKEN_FILE). Взаимоисключающ с -anchor. verify сверяет цепочку со всеми версиями всех checkpoint'ов.
 //
 // version печатает chain_format (уровень формата цепочки, который понимает сборка) и известные схемы записей. Цепочка с
 // записями новее сборки (неизвестная схема aegisops/* или неизвестное поле) не проходит verify и не открывается для
@@ -25,6 +29,7 @@ import (
 	"os"
 
 	"github.com/limpjungle/aegis3311/internal/audit"
+	"github.com/limpjungle/aegis3311/internal/routersvc"
 	"github.com/limpjungle/aegis3311/internal/strictjson"
 )
 
@@ -66,14 +71,15 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		chain, id, key, anchor, priv string
-		pubs                         multi
-		integrityOnly                bool
+		chain, id, key, anchor, anchorCfg, priv string
+		pubs                                    multi
+		integrityOnly                           bool
 	)
 	fs.StringVar(&chain, "chain", "", "файл цепочки")
 	fs.StringVar(&id, "id", "", "chain_id")
 	fs.StringVar(&key, "key", "", "приватный ключ (PEM PKCS#8)")
 	fs.StringVar(&anchor, "anchor", "", "каталог checkpoint'ов")
+	fs.StringVar(&anchorCfg, "anchor-config", "", "конфигурация хранилища checkpoint'ов (JSON routersvc.AnchorConfig)")
 	fs.StringVar(&priv, "priv", "", "куда записать приватный ключ (keygen)")
 	fs.BoolVar(&integrityOnly, "integrity-only", false, "verify: не разбирать записи новее сборки, только цепь, хеши, подписи и checkpoint'ы")
 	fs.Var(&pubs, "pub", "открытый ключ (PEM PKIX), можно несколько; в keygen — куда записать")
@@ -82,6 +88,9 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	}
 	if fs.NArg() != 0 {
 		return usage(fmt.Errorf("лишние аргументы: %v", fs.Args()))
+	}
+	if anchor != "" && anchorCfg != "" {
+		return usage(errors.New("-anchor и -anchor-config взаимоисключающие"))
 	}
 	if integrityOnly && args[0] != "verify" {
 		return usage(errors.New("-integrity-only только для verify"))
@@ -103,8 +112,8 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "key_id:", audit.KeyID(pub))
 		return nil
 	case "append", "checkpoint":
-		if chain == "" || id == "" || key == "" || (args[0] == "checkpoint" && anchor == "") {
-			return usage(fmt.Errorf("%s: нужны -chain, -id, -key%s", args[0], map[bool]string{true: ", -anchor"}[args[0] == "checkpoint"]))
+		if chain == "" || id == "" || key == "" || (args[0] == "checkpoint" && anchor == "" && anchorCfg == "") {
+			return usage(fmt.Errorf("%s: нужны -chain, -id, -key%s", args[0], map[bool]string{true: ", -anchor или -anchor-config"}[args[0] == "checkpoint"]))
 		}
 		signer, err := audit.LoadPrivateKey(key)
 		if err != nil {
@@ -115,6 +124,12 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			return usage(err)
 		}
 		keys.Add(signer.Public())
+		var store audit.CheckpointStore
+		if args[0] == "checkpoint" {
+			if store, err = openStore(anchor, anchorCfg); err != nil {
+				return usage(err)
+			}
+		}
 		w, err := audit.OpenWriter(chain, id, signer, keys)
 		if err != nil {
 			return rejected(err)
@@ -125,7 +140,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			if err != nil {
 				return rejected(err)
 			}
-			if err := (audit.DirAnchor{Dir: anchor}).Put(c); err != nil {
+			if err := store.Put(c); err != nil {
 				return usage(err)
 			}
 			return printJSON(out, c)
@@ -184,11 +199,15 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		defer f.Close()
 		var stats audit.VerifyStats
 		opts := audit.VerifyOptions{ChainID: id, Stats: &stats, IntegrityOnly: integrityOnly}
-		if anchor != "" {
+		if anchor != "" || anchorCfg != "" {
 			if id == "" {
-				return usage(errors.New("verify: с -anchor нужен -id"))
+				return usage(errors.New("verify: с -anchor и -anchor-config нужен -id"))
 			}
-			if opts.Checkpoints, err = (audit.DirAnchor{Dir: anchor}).LoadCheckpoints(id); err != nil {
+			store, err := openStore(anchor, anchorCfg)
+			if err != nil {
+				return usage(err)
+			}
+			if opts.Checkpoints, err = store.LoadCheckpoints(id); err != nil {
 				return rejected(err)
 			}
 		}
@@ -225,6 +244,30 @@ func decodeErr(label string, err error) error {
 		return fmt.Errorf("%w: %s: поле %q неизвестно этой сборке (формат цепочки %d): обновите aegis-audit", audit.ErrNewerFormat, label, uf.Field, audit.ChainFormat)
 	}
 	return fmt.Errorf("%s: %w", label, err)
+}
+
+// openStore открывает хранилище checkpoint'ов: каталог (-anchor) или конфигурация (-anchor-config).
+func openStore(dir, cfgPath string) (audit.CheckpointStore, error) {
+	if cfgPath == "" {
+		return audit.DirAnchor{Dir: dir}, nil
+	}
+	f, err := os.Open(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 1<<20 {
+		return nil, errors.New("-anchor-config: файл больше 1 МиБ")
+	}
+	var ac routersvc.AnchorConfig
+	if err := strictjson.Decode(b, &ac); err != nil {
+		return nil, fmt.Errorf("-anchor-config: %w", err)
+	}
+	return ac.Store(routersvc.LoadAnchorCreds(os.Getenv), nil)
 }
 
 func keyring(paths []string) (audit.Keyring, error) {

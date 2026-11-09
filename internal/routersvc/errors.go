@@ -8,6 +8,9 @@ import (
 	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
+// ErrAnchorUnavailable — внешнее хранилище checkpoint'ов недоступно при старте: сверить цепочку нечем, старт невозможен (fail-closed).
+var ErrAnchorUnavailable = errors.New("routersvc: хранилище checkpoint'ов аудита недоступно")
+
 // Class — класс ошибки; значение совпадает с кодом выхода CLI.
 type Class int
 
@@ -53,6 +56,8 @@ func Hint(err error) string {
 		return "перенесите файл store в сторону; старт с пустым store даст halt state_lost; сверьте расход по decision record'ам и сделайте resume"
 	case errors.Is(err, routerstate.ErrIdentity):
 		return "store другого router_id или других профилей: проверьте router_id и profiles.json"
+	case errors.Is(err, ErrAnchorUnavailable):
+		return "хранилище checkpoint'ов недоступно: проверьте сеть, bucket, ключи AEGIS_AUDIT_S3_* и сертификат; без сверки цепочки сервис не стартует (degraded-mode.md, anchor_unavailable)"
 	case errors.As(err, &ce):
 		return "цепочка повреждена: запустите aegis-audit verify и разберите нарушение (оборванную строку удаляет оператор)"
 	case errors.Is(err, llmrouter.ErrAuditFailed), errors.Is(err, audit.ErrWriterFailed):

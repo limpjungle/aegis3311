@@ -3,3 +3,13 @@ __pycache__/
 *.tmp*
 .env
 *.key
+
+# Артефакты сборки
+/aegis-ci
+/dist/
+/aegis-intake
+/aegis-llmrouter
+/aegis-pep
+/aegis-audit
+/aegis-killswitch
+*.test

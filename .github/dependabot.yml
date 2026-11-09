@@ -1,0 +1,13 @@
+# Обновления зависимостей раз в неделю. Версии GitHub Actions закреплены по SHA: Dependabot обновляет и SHA, и комментарий
+# с версией. Эти PR проходят те же проверки и четыре глаза, что и любые другие (автор dependabot[bot] из .github/four-eyes.json
+# исключён из одобряющих).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly

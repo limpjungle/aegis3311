@@ -46,7 +46,7 @@ type Engine struct {
 
 // Load компилирует *.rego из fsys (кроме *_test.rego) в строгом режиме.
 func Load(ctx context.Context, fsys fs.FS) (*Engine, error) {
-	paths, err := policyFiles(fsys)
+	paths, err := PolicyFiles(fsys)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +76,8 @@ func Load(ctx context.Context, fsys fs.FS) (*Engine, error) {
 	return &Engine{q: q, digest: d}, nil
 }
 
-// policyFiles — отсортированные пути *.rego без тестов.
-func policyFiles(fsys fs.FS) ([]string, error) {
+// PolicyFiles — отсортированные пути *.rego без тестов.
+func PolicyFiles(fsys fs.FS) ([]string, error) {
 	var paths []string
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

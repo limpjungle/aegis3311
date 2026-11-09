@@ -11,7 +11,8 @@ docs/
 ├── 01-planning/
 │   ├── roadmap.md             # Дорожная карта с фазами и gates
 │   ├── plan.md                # План реализации (полный)
-│   └── plan-mvp.md            # План до MVP (MVP-A, MVP-B)
+│   ├── plan-mvp.md            # План до MVP (MVP-A, MVP-B)
+│   └── stage-0a-status.md     # Этап 0a: что осталось и важность
 ├── 02-security/
 │   ├── threat-model.md        # Модель угроз
 │   ├── security-principles.md # Принципы безопасности
@@ -38,7 +39,10 @@ docs/
 └── 07-governance/
     ├── raci.md                # Матрица ответственности
     ├── compliance.md          # GDPR, SOC 2, ISO 27001
-    └── gates.md               # Описание всех decision gates
+    ├── gates.md               # Описание всех decision gates
+    ├── ci-four-eyes.md        # CI, четыре глаза, подписанный policy bundle, проверка артефактов
+    ├── ci-four-eyes-risks.md  # Риски, допущения и ограничения CI и четырёх глаз
+    └── rulesets/              # Тела rulesets GitHub (main.json, tags.json); применяются вручную
 ```
 
 ## Ключевые документы

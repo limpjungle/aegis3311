@@ -11,6 +11,7 @@
 5. **`metrics_listen` в конфигурации — только после обновления бинаря.** Старый бинарь отвергнет неизвестное поле конфигурации (строгий разбор). Затем NetworkPolicy и скрейп.
 6. **Release после старта.** Если в цепочке нет события с `stop_watermark` (первый запуск с kill switch, новая цепочка), первая оценка — bootstrap: intake работает с `llm.mode=off`, пока двое дежурных не опубликуют release с `issued_at` позже `stop_watermark` (`bootstrap_awaiting_release` в `/metrics`). Release, подготовленный до старта, не действует.
 7. **Мониторинг:** `aegis-killswitch check` во внешнем стеке и алерты ([intake-deploy.md](intake-deploy.md), шаг 7).
+8. **Секция `policy_bundle` в конфигурации intake — необязательная.** Без неё intake запускается и пишет предупреждение `policy_bundle_missing`; новое поле `required` (по умолчанию `false`) делает отказ проверки подписанного bundle фатальным (код 2). Старый бинарь отвергнет неизвестную секцию (строгий разбор): сначала обновите бинарь. Включение: после появления ревьюеров, настроек GitHub и genesis-bundle положите `policy-bundle.json` и ключ на хост, добавьте секцию с `required: false`, убедитесь, что в журнале `policy_bundle_verified`, затем поставьте `required: true` ([ci-four-eyes.md](../07-governance/ci-four-eyes.md), чек-лист включения).
 
 ## Откат
 

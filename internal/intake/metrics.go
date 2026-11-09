@@ -25,6 +25,9 @@ type RouterObserver interface{ State() llmrouter.State }
 // ChainHead — голова цепочки аудита (audit.Writer).
 type ChainHead interface{ Head() audit.Head }
 
+// AnchorObserver — состояние выгрузки checkpoint'ов в WORM (audit.Anchorer); nil — anchor не настроен.
+type AnchorObserver interface{ Status() audit.AnchorStatus }
+
 // Metrics — экспозиция Prometheus для serve: kill switch, опрос Alertmanager, записи, инциденты, роутер, цепочка.
 // Наблюдаемость, а не защита. Чувствительного в ней нет: ни ID инцидентов, сервисов, namespace, issuer'ов, sha и
 // intake_id, ни классов ошибок каналов; метки берутся только из фиксированных наборов (исключение — cluster из
@@ -34,6 +37,7 @@ type Metrics struct {
 	KS      KillSwitchObserver
 	Router  RouterObserver
 	Chain   ChainHead
+	Anchor  AnchorObserver // nil — выгрузка checkpoint'ов выключена
 	State   *State
 	Now     func() time.Time
 
@@ -239,6 +243,15 @@ func (m *Metrics) Render() ([]byte, error) {
 		seq = m.Chain.Head().Seq
 	}
 	w.Gauge("aegis_intake_audit_chain_seq", "Номер последней записи цепочки аудита.", metricScalar(float64(seq)))
+	var as audit.AnchorStatus
+	if m.Anchor != nil {
+		as = m.Anchor.Status()
+	}
+	w.Gauge("aegis_intake_audit_anchor_enabled", "1 — checkpoint'ы цепочки выгружаются во внешнее хранилище.", metricScalar(promtext.Bool(m.Anchor != nil)))
+	w.Gauge("aegis_intake_audit_anchor_seq", "Номер записи цепочки, зафиксированной во внешнем хранилище.", metricScalar(float64(as.AnchoredSeq)))
+	w.Gauge("aegis_intake_audit_anchor_lag_seconds", "Возраст самой старой незафиксированной записи; 0 — всё зафиксировано.", metricScalar(as.Lag.Seconds()))
+	w.Gauge("aegis_intake_audit_anchor_last_success_timestamp_seconds", "Последняя успешная фиксация; 0 — не было.", metricScalar(promtext.Unix(as.LastSuccess)))
+	w.Counter("aegis_intake_audit_anchor_errors_total", "Неудачные попытки фиксации checkpoint'а с момента старта.", metricScalar(float64(as.Errors)))
 	w.Gauge("aegis_intake_start_timestamp_seconds", "Время старта процесса.", metricScalar(promtext.Unix(m.started)))
 	return w.Bytes()
 }

@@ -33,6 +33,16 @@ type Writer struct {
 	lastKS *KillSwitchEvent    // последнее событие kill switch в цепочке
 	log    []RouterEvent       // все события роутера в порядке цепочки
 	incs   map[string]struct{} // incident.id decision record'ов в цепочке
+
+	anchoredSeq     uint64    // голова, уже зафиксированная во внешнем хранилище (checkpoint'ы при открытии или MarkAnchored)
+	unanchoredSince time.Time // время первой записи после anchoredSeq; нулевое — всё зафиксировано
+}
+
+// WriterOptions — необязательные параметры OpenWriterWith.
+type WriterOptions struct {
+	// Checkpoints — checkpoint'ы из внешнего хранилища (обычно все версии последнего); цепочка должна с ними совпасть:
+	// усечение, откат файла к старой копии, переписывание или пустая цепочка при непустых checkpoint'ах — ошибка.
+	Checkpoints []Checkpoint
 }
 
 // OpenWriter открывает или создаёт файл цепочки. Существующий файл проверяется целиком (Verify с keys);
@@ -40,6 +50,11 @@ type Writer struct {
 // Ключ signer должен быть в keys. Проверка строгая (без IntegrityOnly): цепочка с записями новее сборки (ErrNewerFormat)
 // не открывается, поэтому писатель не откатывается на сборку с меньшим ChainFormat на той же цепочке.
 func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, error) {
+	return OpenWriterWith(path, chainID, signer, keys, WriterOptions{})
+}
+
+// OpenWriterWith — OpenWriter со сверкой цепочки с checkpoint'ами из внешнего хранилища (o.Checkpoints).
+func OpenWriterWith(path, chainID string, signer Signer, keys Keyring, o WriterOptions) (*Writer, error) {
 	if !chainRe.MatchString(chainID) {
 		return nil, fmt.Errorf("некорректный chain_id %q", chainID)
 	}
@@ -63,7 +78,11 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 	var lastKS *KillSwitchEvent
 	var log []RouterEvent
 	incs := map[string]struct{}{}
-	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID, OnRouterEvent: func(_ uint64, ev *RouterEvent) {
+	var anchored uint64
+	for _, c := range o.Checkpoints {
+		anchored = max(anchored, c.Seq)
+	}
+	head, err := Verify(f, keys, VerifyOptions{ChainID: chainID, Checkpoints: o.Checkpoints, OnRouterEvent: func(_ uint64, ev *RouterEvent) {
 		events[ev.EventID], last = struct{}{}, ev
 		log = append(log, *ev)
 	}, OnRecord: func(_ uint64, rec *DecisionRecord) { incs[rec.Incident.ID] = struct{}{} },
@@ -80,7 +99,7 @@ func OpenWriter(path, chainID string, signer Signer, keys Keyring) (*Writer, err
 			return nil, err
 		}
 	}
-	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, lastKS: lastKS, log: log, incs: incs}, nil
+	return &Writer{f: f, signer: signer, head: head, now: time.Now, events: events, last: last, lastKS: lastKS, log: log, incs: incs, anchoredSeq: anchored}, nil
 }
 
 // Head — текущая голова цепочки.
@@ -265,8 +284,36 @@ func (w *Writer) appendBodyLocked(body []byte) (Entry, error) {
 		w.failed = err
 		return Entry{}, fmt.Errorf("%w: %v", ErrWriterFailed, err)
 	}
+	if w.head.Seq == w.anchoredSeq {
+		w.unanchoredSince = w.now()
+	}
 	w.head.Seq, w.head.Hash = e.Seq, e.Hash
 	return e, nil
+}
+
+// AnchorState — зафиксированный seq, текущий seq головы и время, с которого есть незафиксированные записи
+// (нулевое время — всё зафиксировано).
+func (w *Writer) AnchorState() (anchored, head uint64, since time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.anchoredSeq, w.head.Seq, w.unanchoredSince
+}
+
+// MarkAnchored отмечает, что checkpoint с этим seq сохранён во внешнем хранилище. Значение только растёт и не выше головы.
+// Если за seq уже есть новые записи, время отставания приближается моментом вызова.
+func (w *Writer) MarkAnchored(seq uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	seq = min(seq, w.head.Seq)
+	if seq <= w.anchoredSeq {
+		return
+	}
+	w.anchoredSeq = seq
+	if seq == w.head.Seq {
+		w.unanchoredSince = time.Time{}
+	} else {
+		w.unanchoredSince = w.now()
+	}
 }
 
 // Checkpoint подписывает текущую голову цепочки (для передачи в Anchor).
@@ -301,6 +348,15 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+// CheckpointStore — Anchor, из которого можно читать checkpoint'ы обратно.
+type CheckpointStore interface {
+	Anchor
+	// LoadCheckpoints — все версии всех checkpoint'ов цепочки (полная проверка, aegis-audit verify).
+	LoadCheckpoints(chainID string) ([]Checkpoint, error)
+	// LatestCheckpoints — все версии checkpoint'а с максимальным seq (сверка на старте); пусто — checkpoint'ов нет.
+	LatestCheckpoints(chainID string) ([]Checkpoint, error)
 }
 
 // Anchor — внешнее хранилище checkpoint'ов (WORM с object lock или transparency log).
@@ -355,6 +411,25 @@ func (a DirAnchor) LoadCheckpoints(chainID string) ([]Checkpoint, error) {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 		if c.ChainID == chainID { // префикс имени может совпасть у цепочек "a" и "a-b"
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// LatestCheckpoints возвращает checkpoint'ы цепочки chainID с максимальным seq.
+func (a DirAnchor) LatestCheckpoints(chainID string) ([]Checkpoint, error) {
+	all, err := a.LoadCheckpoints(chainID)
+	if err != nil {
+		return nil, err
+	}
+	var top uint64
+	for _, c := range all {
+		top = max(top, c.Seq)
+	}
+	var out []Checkpoint
+	for _, c := range all {
+		if c.Seq == top {
 			out = append(out, c)
 		}
 	}

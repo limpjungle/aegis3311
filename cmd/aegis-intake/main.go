@@ -16,6 +16,13 @@
 // записи (kill_switch) и в цепочке аудита (события kill_switch_*); флаги — реальные для PEP. Первый опрос выполняется до
 // приёма инцидентов. collect kill switch не читает; aegis-llmrouter route его тоже не читает.
 //
+// Policy bundle (threat-model T-24): serve и replay (без -prepare-only) читают подписанный bundle из policy_bundle.path,
+// проверяют подпись ключами policy_bundle.keys (ed25519), одобрения (не меньше двух разных людей, не автор, не меньше двух
+// групп) и совпадение файлов политик, каталога и eval-ассетов LLM со встроенными в бинарь (журнал policy_bundle_verified).
+// Секции нет — проверка выключена (предупреждение policy_bundle_missing); required=false — отказ проверки только
+// предупреждает (policy_bundle_unverified); required=true — отказ проверки означает код 2 до приёма инцидентов. Ключ аудита
+// и ключи kill switch в keyring bundle входить не должны (код 2 при любом required).
+//
 // Метрики (serve): metrics_listen в конфигурации (host:port; пусто — выключено) поднимает отдельный HTTP-listener с GET/HEAD
 // /metrics (формат Prometheus 0.0.4: kill switch, опросы Alertmanager, записи, инциденты, роутер, цепочка) и /healthz
 // (всегда 200, пока процесс жив; от kill switch не зависит, readiness по нему делать нельзя). В метриках нет ID инцидентов,
@@ -29,7 +36,7 @@
 // Конфигурация — intake.Config (JSON, без секретов); пример и допущения окружения — docs/04-operations/intake-deploy.md.
 //
 // Коды выхода: 0 — успех; 1 — fail-closed (store, цепочка, аудит или состояние intake отказали или повреждены);
-// 2 — ошибка аргументов, конфигурации или окружения (в том числе занятый metrics_listen); 3 — файлы заняты работающим процессом.
+// 2 — ошибка аргументов, конфигурации или окружения (в том числе занятый metrics_listen и отказ проверки policy bundle при required=true); 3 — файлы заняты работающим процессом.
 package main
 
 import (
@@ -47,6 +54,7 @@ import (
 	"time"
 
 	"github.com/limpjungle/aegis3311/internal/audit"
+	"github.com/limpjungle/aegis3311/internal/bundle"
 	"github.com/limpjungle/aegis3311/internal/catalog"
 	"github.com/limpjungle/aegis3311/internal/intake"
 	"github.com/limpjungle/aegis3311/internal/intake/alertmanager"
@@ -182,6 +190,80 @@ func loadKillSwitchKeys(cfg intake.Config, sec routersvc.Secrets) (killswitch.Ke
 	return keys, nil
 }
 
+// keyOverlapError — ключ подписи bundle совпал с ключом аудита или kill switch: ошибка конфигурации при любом required.
+type keyOverlapError struct{ error }
+
+// loadPolicyBundle читает подписанный policy bundle и проверяет его: подпись известным ключом, структуру, одобрения
+// (не меньше двух разных людей, не автор, не меньше двух групп) и соответствие содержимому, встроенному в бинарь
+// (файлы политик, каталога и eval-ассетов LLM по sha256 и их дайджесты). Ключ аудита и ключи kill switch в keyring
+// bundle входить не должны: ключ одного назначения не должен подтверждать другое.
+func loadPolicyBundle(cfg intake.Config, sec routersvc.Secrets, ksKeys killswitch.Keyring) (*bundle.Verified, error) {
+	pb := cfg.PolicyBundle
+	keys, err := bundle.LoadKeyring(pb.Keys)
+	if err != nil {
+		return nil, err
+	}
+	if _, dup := keys[audit.KeyID(sec.Signer.Public())]; dup {
+		return nil, keyOverlapError{errors.New("policy bundle: ключ подписи аудита intake входит в ключи подписи bundle")}
+	}
+	for id := range keys {
+		if _, dup := ksKeys[id]; dup {
+			return nil, keyOverlapError{fmt.Errorf("policy bundle: ключ %s входит и в ключи kill switch", id)}
+		}
+	}
+	f, err := os.Open(pb.Path)
+	if err != nil {
+		return nil, fmt.Errorf("policy bundle: %w", err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, bundle.MaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("policy bundle: %w", err)
+	}
+	v, err := bundle.Verify(raw, keys)
+	if err != nil {
+		return nil, err
+	}
+	emb, err := bundle.Embedded()
+	if err != nil {
+		return nil, err
+	}
+	if err := v.Matches(emb); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// checkPolicyBundle применяет политику обязательности проверки bundle (policy_bundle.required): секции нет — предупреждение,
+// отказ при required=false — предупреждение, при required=true — ошибка (код 2 до приёма инцидентов). Пересечение
+// ключей — ошибка всегда. Дайджесты загруженных каталога и политик сверяются с манифестом.
+func checkPolicyBundle(cfg intake.Config, sec routersvc.Secrets, ksKeys killswitch.Keyring, cat *catalog.Catalog, pol *policyengine.Engine, lg *slog.Logger) error {
+	if cfg.PolicyBundle == nil {
+		lg.Warn("policy_bundle_missing", "hint", "проверка подписанного bundle выключена: политики не подтверждены четырьмя глазами (stage-0a-status п. 3)")
+		return nil
+	}
+	v, err := loadPolicyBundle(cfg, sec, ksKeys)
+	if err == nil {
+		d := v.Manifest.Digests
+		if d[bundle.DigestPolicy] != pol.Digest() || d[bundle.DigestCatalog] != cat.Digest() {
+			err = errors.New("policy bundle: дайджесты манифеста не совпадают с загруженными политиками и каталогом")
+		}
+	}
+	if err == nil {
+		m := v.Manifest
+		lg.Info("policy_bundle_verified", "sequence", m.Sequence, "commit", m.Commit, "pr", m.Approvals.PR,
+			"policy_bundle_digest", m.Digests[bundle.DigestPolicy], "catalog_digest", m.Digests[bundle.DigestCatalog],
+			"llm_assets_digest", m.Digests[bundle.DigestLLM])
+		return nil
+	}
+	var overlap keyOverlapError
+	if cfg.PolicyBundle.Required || errors.As(err, &overlap) {
+		return err
+	}
+	lg.Warn("policy_bundle_unverified", "error", err.Error())
+	return nil
+}
+
 // newMonitor собирает монитор kill switch и восстанавливает водяные знаки из последнего события цепочки.
 func newMonitor(cfg intake.Config, d intake.Durations, keys killswitch.Keyring, srcs []killswitch.Source, rt *routersvc.Runtime,
 	cat *catalog.Catalog, lg *slog.Logger) (*killswitch.Monitor, error) {
@@ -287,6 +369,11 @@ func run(ctx context.Context, args []string, e env) error {
 		return err
 	}
 	lg := slog.New(slog.NewJSONHandler(e.stderr, nil))
+	if args[0] == "serve" || (args[0] == "replay" && !prepareOnly) {
+		if err := checkPolicyBundle(icfg, sec, ksKeys, cat, pol, lg); err != nil {
+			return usage(err)
+		}
+	}
 	d := e.deps
 	d.Logger = lg
 	rt, err := routersvc.Open(rcfg, sec, routersvc.OpenOptions{Create: args[0] == "serve"}, d)
@@ -351,6 +438,9 @@ func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *route
 	var metrics *intake.Metrics
 	if ln != nil {
 		metrics = intake.NewMetrics(cfg.KillSwitch.Cluster, mon, rt.Router, rt.Writer, st, nil)
+		if rt.Anchorer != nil {
+			metrics.Anchor = rt.Anchorer
+		}
 		pipe.Metrics = metrics
 	}
 	svc := &intake.Service{Cfg: cfg, D: d, Alerts: live.Alerts, State: st, Pipe: pipe, Router: rt.Router, Log: lg, Metrics: metrics,

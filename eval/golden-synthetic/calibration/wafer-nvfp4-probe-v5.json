@@ -18,6 +18,22 @@
    "n_cases": 635,
    "run_id": "20261108T213622Z-e631",
    "verdict": "OK"
+  },
+  {
+   "after_freeze": false,
+   "file": "runs/wafer-nvfp4/probe-20261109T214409Z-84ed.jsonl",
+   "findings": [],
+   "finished_at": "2026-11-09T21:58:56Z",
+   "metrics": {
+    "admissible": 99.84,
+    "decision_agreement": 97.95,
+    "harmful": 0.16,
+    "root_cause_match": 99.84,
+    "truncated_share": 0.0
+   },
+   "n_cases": 635,
+   "run_id": "20261109T214409Z-84ed",
+   "verdict": "OK"
   }
  ],
  "profile": "wafer-nvfp4",
@@ -42,5 +58,5 @@
   "truncated_share": 0.0
  },
  "set_sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
- "updated_at": "2026-11-08T21:56:21Z"
+ "updated_at": "2026-11-09T21:59:01Z"
 }

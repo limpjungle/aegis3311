@@ -53,6 +53,7 @@ type Runtime struct {
 	Assets        *openrouter.Assets
 	Config        Config
 	MaskerVersion string
+	Anchorer      *audit.Anchorer // nil, если audit.anchor не задан
 
 	log       *slog.Logger
 	poll      time.Duration
@@ -119,7 +120,27 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 			}
 		}
 	}
-	w, err := audit.OpenWriter(cfg.Audit.Chain, cfg.Audit.ChainID, sec.Signer, keys)
+	// Сверка со внешним хранилищем — до открытия файла цепочки: при недоступном хранилище ничего не создаётся.
+	var wo audit.WriterOptions
+	var store audit.CheckpointStore
+	var policy audit.AnchorPolicy
+	if ac := cfg.Audit.Anchor; ac != nil {
+		if store, err = ac.Store(sec.AnchorCreds, nil); err != nil {
+			return nil, err
+		}
+		policy, _ = ac.Policy()
+		if wo.Checkpoints, err = store.LatestCheckpoints(cfg.Audit.ChainID); err != nil {
+			var k interface{ ErrKind() string }
+			if errors.As(err, &k) { // ошибка клиента S3: только класс, без тел ответов
+				err = errors.New(k.ErrKind())
+			}
+			log.Error("audit_anchor_unavailable", "error", err.Error())
+			return nil, fmt.Errorf("%w: %v", ErrAnchorUnavailable, err)
+		}
+	} else {
+		log.Warn("audit_anchor_disabled", "hint", "checkpoint'ы цепочки не выгружаются в WORM: усечение и откат файла не будут обнаружены")
+	}
+	w, err := audit.OpenWriterWith(cfg.Audit.Chain, cfg.Audit.ChainID, sec.Signer, keys, wo)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +162,9 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 		return nil, err
 	}
 	rt := &Runtime{Router: r, Writer: w, Store: fs, Assets: a, Config: cfg, MaskerVersion: m.Version(), log: log, poll: poll}
+	if store != nil {
+		rt.Anchorer = audit.NewAnchorer(w, store, policy, nil, log)
+	}
 	s := r.State()
 	log.Info("llmrouter_opened", "router_id", cfg.RouterID, "chain_id", cfg.Audit.ChainID, "state_path", cfg.StatePath,
 		"chain", cfg.Audit.Chain, "masker_version", rt.MaskerVersion, "assets_config_sha256", a.ConfigSHA256,
@@ -167,6 +191,13 @@ func (rt *Runtime) Close() error {
 func (rt *Runtime) Serve(ctx context.Context) error {
 	done := make(chan error, 1)
 	go func() { done <- rt.Router.RunHealthLoop(ctx) }()
+	if rt.Anchorer != nil {
+		actx, stop := context.WithCancel(ctx)
+		fin := make(chan struct{})
+		go func() { defer close(fin); rt.Anchorer.Run(actx) }()
+		// Выходим только после последней фиксации: Runtime закроет писатель сразу после Serve.
+		defer func() { stop(); <-fin }()
+	}
 	prev := rt.Router.State()
 	t := time.NewTicker(rt.poll)
 	defer t.Stop()

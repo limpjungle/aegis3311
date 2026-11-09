@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/limpjungle/aegis3311/internal/audit"
+	"github.com/limpjungle/aegis3311/internal/audit/worm"
+	"github.com/limpjungle/aegis3311/internal/killswitch/s3"
 	"github.com/limpjungle/aegis3311/internal/llmrouter"
 	"github.com/limpjungle/aegis3311/internal/masker"
 	"github.com/limpjungle/aegis3311/internal/strictjson"
@@ -39,6 +42,80 @@ type AuditConfig struct {
 	Chain      string   `json:"chain"`       // абсолютный путь файла цепочки
 	ChainID    string   `json:"chain_id"`    //
 	PublicKeys []string `json:"public_keys"` // PEM PKIX прежних ключей (ротация); ключ подписи добавляется сам
+	// Anchor — внешнее хранилище checkpoint'ов (WORM). nil — checkpoint'ы не выгружаются и не сверяются (предупреждение в логе).
+	Anchor *AnchorConfig `json:"anchor"`
+}
+
+// AnchorConfig — куда выгружать checkpoint'ы цепочки и как часто.
+type AnchorConfig struct {
+	Kind     string      `json:"kind"`     // "s3" | "dir"
+	Dir      string      `json:"dir"`      // для dir: абсолютный путь (только разработка и тесты)
+	S3       worm.Config `json:"s3"`       // для s3
+	Interval string      `json:"interval"` // период фиксации, по умолчанию "5m"
+	MaxLag   string      `json:"max_lag"`  // отставание, после которого метрика/лог аварийные, по умолчанию "1h"
+}
+
+// Policy — период и допустимое отставание (нули заменены значениями по умолчанию).
+func (a AnchorConfig) Policy() (audit.AnchorPolicy, error) {
+	p := audit.AnchorPolicy{Interval: 5 * time.Minute, MaxLag: time.Hour}
+	for _, d := range []struct {
+		name, s string
+		dst     *time.Duration
+	}{{"interval", a.Interval, &p.Interval}, {"max_lag", a.MaxLag, &p.MaxLag}} {
+		if d.s == "" {
+			continue
+		}
+		v, err := time.ParseDuration(d.s)
+		if err != nil || v <= 0 {
+			return p, fmt.Errorf("конфигурация: audit.anchor.%s: ожидается положительная длительность, например \"5m\"", d.name)
+		}
+		*d.dst = v
+	}
+	return p, nil
+}
+
+// Validate проверяет конфигурацию без обращения к сети и файловой системе.
+func (a AnchorConfig) Validate() error {
+	if _, err := a.Policy(); err != nil {
+		return err
+	}
+	switch a.Kind {
+	case "s3":
+		if a.Dir != "" {
+			return errors.New("конфигурация: audit.anchor.dir не используется с kind \"s3\"")
+		}
+		if err := a.S3.Validate(); err != nil {
+			return fmt.Errorf("конфигурация: audit.anchor.s3: %w", err)
+		}
+	case "dir":
+		if a.Dir == "" || !filepath.IsAbs(a.Dir) {
+			return errors.New("конфигурация: audit.anchor.dir должен быть абсолютным путём")
+		}
+		if a.S3 != (worm.Config{}) {
+			return errors.New("конфигурация: audit.anchor.s3 не используется с kind \"dir\"")
+		}
+	default:
+		return fmt.Errorf("конфигурация: audit.anchor.kind %q: ожидается \"s3\" или \"dir\"", a.Kind)
+	}
+	return nil
+}
+
+// Store строит хранилище checkpoint'ов. creds — ключи доступа к S3 (kind "s3"); now == nil → time.Now.
+func (a AnchorConfig) Store(creds s3.CredFiles, now func() time.Time) (audit.CheckpointStore, error) {
+	if err := a.Validate(); err != nil {
+		return nil, &ConfigError{err}
+	}
+	if a.Kind == "dir" {
+		return audit.DirAnchor{Dir: a.Dir}, nil
+	}
+	if creds.AccessKeyIDFile == "" || creds.SecretKeyFile == "" {
+		return nil, &ConfigError{fmt.Errorf("audit.anchor: не заданы %s и %s", AnchorAccessKeyEnv, AnchorSecretKeyEnv)}
+	}
+	st, err := worm.New(a.S3, creds, now)
+	if err != nil {
+		return nil, &ConfigError{err}
+	}
+	return st, nil
 }
 
 type BudgetsConfig struct {
@@ -101,6 +178,9 @@ func (c Config) Validate() error {
 		if p == "" {
 			return errors.New("конфигурация: пустой путь в audit.public_keys")
 		}
+	}
+	if c.Audit.Anchor != nil {
+		return c.Audit.Anchor.Validate()
 	}
 	return nil
 }

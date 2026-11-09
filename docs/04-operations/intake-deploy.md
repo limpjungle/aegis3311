@@ -318,6 +318,23 @@ aegis_sessions_by_state:
 
 Поведение при пустом результате: в `metrics` запрос без серий даёт секцию без элементов (статус `empty`); в `db_queries` пустой вектор — ошибка (агрегаты неполны, `db.aggregates` критичен), поэтому запросы, у которых «нет данных» значит «ноль», заканчиваются на `or vector(0)`.
 
+## WORM для checkpoint'ов аудита *(09.11.2026)*
+
+1. Bucket в **отдельном аккаунте/каталоге**: включить версионирование и Object Lock, режим по умолчанию не обязателен — сервис ставит COMPLIANCE и срок на каждый checkpoint (`retention`, например `8760h`; режим необратим до истечения срока, выбирать осознанно).
+2. Отдельная пара ключей сервисного аккаунта (не ключи kill switch): `PutObject`, `GetObject` (включая версии), `ListBucketVersions`; **без** `DeleteObject`/`DeleteObjectVersion`. Пути — в `AEGIS_AUDIT_S3_ACCESS_KEY_ID_FILE`, `AEGIS_AUDIT_S3_SECRET_KEY_FILE`, необязательно `AEGIS_AUDIT_S3_SESSION_TOKEN_FILE`.
+3. В конфигурации роутера (`router_config`):
+
+```json
+"audit": {"chain": "...", "chain_id": "aegis-prod", "public_keys": [],
+  "anchor": {"kind": "s3", "interval": "5m", "max_lag": "1h",
+    "s3": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis-audit-worm",
+           "prefix": "prod/", "path_style": true, "retention": "8760h", "timeout": "10s"}}}
+```
+
+4. Алерты: `aegis_intake_audit_anchor_enabled == 0` (anchor выключен), `aegis_intake_audit_anchor_lag_seconds > 3600` (синхронно с `max_lag`), `rate(aegis_intake_audit_anchor_errors_total[15m]) > 0`, давность `aegis_intake_audit_anchor_last_success_timestamp_seconds`.
+5. Проверка: `aegis-audit checkpoint ... -anchor-config FILE`, затем `aegis-audit verify ... -id CHAIN_ID -anchor-config FILE` (в выводе `checkpoints_checked`). Те же `AEGIS_AUDIT_S3_*` в окружении.
+6. Не проверено на живом Yandex Object Storage: per-object lock-заголовки без default retention, lock-заголовки в ответе GET, точный XML `?versions` — проверить до включения в shadow.
+
 ## Проверка перед shadow
 
 1. `aegis-intake collect -config FILE -namespace NS -service SVC -print-input` по каждому сервису реестра: все источники `ok`, форма входа читается глазами, нет исключённых фрагментов (`excluded`), `not_sent` пусто.

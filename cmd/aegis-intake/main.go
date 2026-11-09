@@ -438,6 +438,9 @@ func serve(ctx context.Context, cfg intake.Config, d intake.Durations, rt *route
 	var metrics *intake.Metrics
 	if ln != nil {
 		metrics = intake.NewMetrics(cfg.KillSwitch.Cluster, mon, rt.Router, rt.Writer, st, nil)
+		if rt.Anchorer != nil {
+			metrics.Anchor = rt.Anchorer
+		}
 		pipe.Metrics = metrics
 	}
 	svc := &intake.Service{Cfg: cfg, D: d, Alerts: live.Alerts, State: st, Pipe: pipe, Router: rt.Router, Log: lg, Metrics: metrics,

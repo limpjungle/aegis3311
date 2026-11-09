@@ -95,25 +95,52 @@ func TestWorkflowSigningKeyHygiene(t *testing.T) {
 	}
 }
 
-// Кэш setup-go включён только в ci.yml (там нет секретов и записи): отравление кэша не должно доходить до подписи и релиза.
-func TestWorkflowCacheOnlyInCI(t *testing.T) {
-	for _, w := range loadWorkflows(t) {
-		for id, job := range w.jobs() {
-			for _, s := range steps(job) {
-				u := key(s, "uses")
-				if u == nil || !strings.HasPrefix(u.Value, "actions/cache") && !strings.HasPrefix(u.Value, "actions/setup-") {
-					continue
-				}
-				if strings.HasPrefix(u.Value, "actions/cache") && w.name != "ci.yml" {
-					t.Errorf("%s/%s: actions/cache вне ci.yml", w.name, id)
-				}
-				if w.name == "four-eyes.yml" && strings.HasPrefix(u.Value, "actions/setup-go@") {
-					// four-eyes.yml исполняет код PR: кэш допустим только без записи, но здесь его быть не должно (по умолчанию).
-					if n := key(key(s, "with"), "cache"); n != nil && n.Value != "false" {
-						t.Errorf("%s/%s: cache включён", w.name, id)
-					}
+// cacheViolations — нарушения правила кэша: actions/cache* и setup-go с кэшем допустимы только в ci.yml
+// (там нет секретов и записи); у setup-go кэш по умолчанию включён, поэтому нужен явный cache: false.
+func cacheViolations(w workflow) []string {
+	var out []string
+	for id, job := range w.jobs() {
+		for _, s := range steps(job) {
+			u := key(s, "uses")
+			if u == nil || w.name == "ci.yml" {
+				continue
+			}
+			if strings.HasPrefix(u.Value, "actions/cache") {
+				out = append(out, w.name+"/"+id+": actions/cache вне ci.yml")
+			}
+			if strings.HasPrefix(u.Value, "actions/setup-go@") {
+				if n := key(key(s, "with"), "cache"); n == nil || n.Value != "false" {
+					out = append(out, w.name+"/"+id+": setup-go без явного cache: false")
 				}
 			}
+		}
+	}
+	return out
+}
+
+// Кэш setup-go включён только в ci.yml: отравление кэша не должно доходить до подписи и релиза.
+func TestWorkflowCacheOnlyInCI(t *testing.T) {
+	for _, w := range loadWorkflows(t) {
+		for _, v := range cacheViolations(w) {
+			t.Error(v)
+		}
+	}
+	const head = "jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-go@abc\n"
+	for _, c := range []struct {
+		name, file, with string
+		bad              bool
+	}{
+		{"нет ключа", "x.yml", "", true},
+		{"true", "x.yml", "        with:\n          cache: true\n", true},
+		{"false", "x.yml", "        with:\n          cache: false\n", false},
+		{"ci без ключа", "ci.yml", "", false},
+	} {
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(head+c.with), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(cacheViolations(workflow{name: c.file, root: doc.Content[0]})) > 0; got != c.bad {
+			t.Errorf("%s: нарушение=%v, ожидалось %v", c.name, got, c.bad)
 		}
 	}
 }

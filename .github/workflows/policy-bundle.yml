@@ -29,7 +29,8 @@ on:
 
 permissions: {}
 
-# Прогоны идут строго по очереди и не отменяются: пропуск коммита рвёт цепочку.
+# Прогоны не отменяются (cancel-in-progress: false), но группа держит только ОДИН ожидающий прогон: следующий push в main
+# отменяет ожидавший. Пока прогон защищённого коммита не завершён, в main ничего не сливать (ci-four-eyes.md §5, риск 8).
 concurrency:
   group: policy-bundle
   cancel-in-progress: false
@@ -142,16 +143,19 @@ jobs:
           d="$RUNNER_TEMP/b0keys"
           mkdir -p "$d"
           git show "$B0:deploy/policy-bundle/keys.json" > "$d/keys.json"
-          for p in $(jq -r '.[].path' "$d/keys.json"); do
+          # Пути — по одному на строку, без разбиения по пробелам и glob; не строка, пустой путь или перевод строки — отказ jq.
+          jq -r '.[].path | if type == "string" and length > 0 and (contains("\n") | not) then . else error("недопустимый path в keys.json") end' \
+            "$d/keys.json" > "$RUNNER_TEMP/b0keypaths.txt"
+          while IFS= read -r p; do
             case "$p" in
               /* | *..*)
                 echo "::error::Недопустимый путь ключа в keys.json коммита B0: $p"
                 exit 1
                 ;;
             esac
-            mkdir -p "$d/$(dirname "$p")"
+            mkdir -p "$d/$(dirname -- "$p")"
             git show "$B0:deploy/policy-bundle/$p" > "$d/$p"
-          done
+          done < "$RUNNER_TEMP/b0keypaths.txt"
       - name: Проверяющий aegis-ci из коммита предыдущего bundle
         env:
           B0: ${{ steps.prev.outputs.b0 }}

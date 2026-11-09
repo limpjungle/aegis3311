@@ -42,6 +42,9 @@ func TestPolicyBundleB0Anchor(t *testing.T) {
 	if !strings.Contains(keysRun, `git show "$B0:deploy/policy-bundle/keys.json"`) {
 		t.Error("ключи prev должны читаться git show из B0")
 	}
+	if !strings.Contains(keysRun, "while IFS= read -r p") || strings.Contains(keysRun, "for p in $(") {
+		t.Error("пути ключей читаются построчно (while read), не через for по подстановке")
+	}
 	if !strings.Contains(build, "git worktree add") {
 		t.Error("сборка из B0 не найдена")
 	}
@@ -132,5 +135,74 @@ func TestB0AnchorScript(t *testing.T) {
 	gitT(t, dir, nil, "update-ref", "refs/remotes/origin/main", c1)
 	if run(b0, s, "1") == nil {
 		t.Error("B0 вне истории origin/main должен быть отказом")
+	}
+}
+
+// Шаг ключей исполняется на временном репозитории: пробелы и glob в путях не разбиваются, плохие пути — отказ.
+func TestB0KeysScript(t *testing.T) {
+	for _, tool := range []string{"git", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " не найден")
+		}
+	}
+	script, _ := stepRun(t, "plan", "Ключи предыдущего bundle из B0")
+	dir := t.TempDir()
+	for _, a := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "t"}, {"config", "commit.gpgsign", "false"}} {
+		gitT(t, dir, nil, a...)
+	}
+	kd := filepath.Join(dir, "deploy", "policy-bundle")
+	if err := os.MkdirAll(filepath.Join(kd, "keys"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"keys/ci key.pub": "space  key\n", "k*.pub": "literal\n", "k1.pub": "one\n"} {
+		if err := os.WriteFile(filepath.Join(kd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(keysJSON string) (string, error) {
+		if err := os.WriteFile(filepath.Join(kd, "keys.json"), []byte(keysJSON), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitT(t, dir, nil, "add", "-A")
+		gitT(t, dir, nil, "commit", "-q", "--allow-empty", "-m", "b0")
+		b0 := gitT(t, dir, nil, "rev-parse", "HEAD")
+		tmp := t.TempDir()
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "B0="+b0, "RUNNER_TEMP="+tmp)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("отказ: %s", strings.TrimSpace(string(out)))
+		}
+		return filepath.Join(tmp, "b0keys"), err
+	}
+	out, err := run(`[]`)
+	if err != nil {
+		t.Fatalf("пустой список: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "keys.json")); err != nil {
+		t.Errorf("keys.json не создан: %v", err)
+	}
+	out, err = run(`[{"path":"keys/ci key.pub"}]`)
+	if err != nil {
+		t.Fatalf("путь с пробелом: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "keys", "ci key.pub")); string(b) != "space  key\n" {
+		t.Errorf("файл с пробелом скопирован неверно: %q", b)
+	}
+	out, err = run(`[{"path":"k*.pub"}]`)
+	if err != nil {
+		t.Fatalf("литеральный glob-путь: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "k*.pub")); string(b) != "literal\n" {
+		t.Errorf("k*.pub скопирован неверно: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(out, "k1.pub")); err == nil {
+		t.Error("glob раскрылся: k1.pub скопирован")
+	}
+	for _, bad := range []string{`[{"path":"/abs"}]`, `[{"path":"../x"}]`, `[{"path":null}]`, `[{"path":""}]`, `[{"path":"a\nb"}]`, `[{"path":"nope.pub"}]`} {
+		if _, err := run(bad); err == nil {
+			t.Errorf("%s должен быть отказом", bad)
+		}
 	}
 }

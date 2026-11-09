@@ -4,7 +4,7 @@
 
 ## Сделано
 
-Модель угроз; каталог действий и матрица автономности; PEP dry-run; LLM-роутер с маскированием, исключением restricted-контекста и режимом `off`; read-only intake; синтетический golden-набор и ежедневная eval-проба (набор и промпт v5); kill switch: код, наблюдаемость (`aegis-killswitch check`, `/metrics` intake), версия формата цепочки аудита. Закрыты угрозы T-01…T-03, T-08, T-12, T-15. CI, правило четырёх глаз, подпись policy bundle и релизный пайплайн — в репозитории (механизмы; T-24 пока не закрыт, см. п. 3). Аудит: выгрузка checkpoint'ов в WORM (`S3Anchor`, object lock COMPLIANCE, чтение всех версий), сверка на старте, периодическая фиксация с метриками отставания (09.11.2026).
+Модель угроз; каталог действий и матрица автономности; PEP dry-run; LLM-роутер с маскированием, исключением restricted-контекста и режимом `off`; read-only intake; синтетический golden-набор и ежедневная eval-проба (набор и промпт v5); kill switch: код, наблюдаемость (`aegis-killswitch check`, `/metrics` intake), версия формата цепочки аудита. Закрыты угрозы T-01…T-03, T-08, T-12, T-15. CI, правило четырёх глаз, подпись policy bundle и релизный пайплайн — в репозитории (механизмы; T-24 пока не закрыт, см. п. 3). Аудит: выгрузка checkpoint'ов в WORM (`S3Anchor`, object lock COMPLIANCE, чтение всех версий), сверка на старте, периодическая фиксация с метриками отставания (09.11.2026). Кодовые правки до genesis: защищён `internal/promtext/`, тест покрытия файлов сборки, `cache: false` в four-eyes, цикл по ключам B0, правило слияния по одному (риски 8, 11, 17, 25; 09.11.2026).
 
 ## Пункты этапа
 
@@ -34,7 +34,7 @@
 | 2 | Выбрать KMS для подписи цепочки аудита (Yandex KMS — только ECDSA/RSA, без Ed25519; Vault Transit — нужен живой токен в поде, противоречит init-режиму Vault Agent и требует пересмотра T-36; HSM) | **Блокер shadow** | — |
 | 2 | Утвердить срок хранения checkpoint'ов в WORM (режим COMPLIANCE необратим до истечения срока) — Security и compliance | **Блокер shadow** | До создания bucket'а |
 | 2 | Принять (или отклонить) отступление от T-23: отставание выгрузки не блокирует запись до G1 — Security | Высокая | — |
-| 3 | Найти ещё одного ревьюера в `policy-owners` или `sre-leads` (оператор платформы или второй SRE-лид). Сейчас (09.11.2026): `limpjungle` — SRE-лид, `trix13371` — security; автор PR не одобряет, поэтому двух одобрений пока не набрать | **Блокер shadow** | — |
+| 3 | ~~Найти ещё одного ревьюера~~ Сделано 09.11.2026: `limpjungle` и `Oltix146` — SRE-лиды, `trix13371` — security; два одобрения набираются при любом авторе. Остаётся: второй участник `security` — иначе PR от `trix13371` в пути с `require: security` не слить (средняя) | Решено | — |
 | 3 | Прогнать RT-11 вручную на живом репозитории | **Блокер shadow** | Включение четырёх глаз |
 | 4 | ~~Решение Security: развернуть SPIRE/Vault или сузить объём~~ Принято 09.11.2026: SPIRE в MVP-B, Vault/OpenBao в MVP-A | Решено | — |
 | 4 | Выбрать Vault или OpenBao (лицензия BSL 1.1 — legal; unseal: Yandex KMS у Vault, у OpenBao проверить) | Высокая, до развёртывания | — |
@@ -76,11 +76,11 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
-| 3 | Группы в `.github/four-eyes.json` и CODEOWNERS: `security` — `trix13371` внесён (09.11.2026); добавить третьего участника, когда появится (один PR) | **Блокер shadow** | Ревьюер |
+| 3 | ~~Группы в `.github/four-eyes.json` и CODEOWNERS~~ Сделано 09.11.2026: `sre-leads` — `limpjungle`, `Oltix146`; `security` — `trix13371` | Решено | — |
 | 3 | Применить rulesets и environments `policy-signing`, `release` | **Блокер shadow** | Группы, ключ |
 | 3 | Отключить merge-коммит и rebase в настройках репозитория (риск 14) | **Блокер shadow** | — |
 | 3 | Ограничить круг write; проверить и включить immutable releases для `policy-bundle-*` (риск 6) | Средняя | — |
-| 3 | Genesis-bundle (`workflow_dispatch`, `genesis=true`) | **Блокер shadow** | Rulesets, ключ, кодовые правки до genesis (ниже) |
+| 3 | Genesis-bundle (`workflow_dispatch`, `genesis=true`) | **Блокер shadow** | Rulesets, ключ |
 | 3 | `policy_bundle.required: true` у intake | **Блокер shadow** | Genesis |
 | 2 | Секция `audit.anchor` в конфигурации intake на стенде | **Блокер shadow** | Bucket, ключи |
 | 8 | Первый прогон `release` на GitHub, сверить входы actions v7/v8 | Высокая | Environment `release` |
@@ -90,10 +90,6 @@
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
 | 2 | KMS-подписант цепочки аудита; для Yandex KMS — ECDSA P-256 в keyring и `ChainFormat = 4` (сначала верификаторы) | **Блокер shadow** | Выбор KMS |
-| 3 | Защитить весь Go-код, попадающий в бинари: `eval/golden-synthetic/*.go`, `internal/promtext/`; тест «`go list -deps ./cmd/aegis-*` ⊆ защищённых путей» (риск 11) | **Блокер shadow** | До genesis |
-| 3 | `cache: false` в `four-eyes.yml` и проверка отсутствующего ключа в `TestWorkflowCacheOnlyInCI` (риск 25) | Низкая | До genesis |
-| 3 | Цикл по `keys.json` в `policy-bundle.yml` через `while IFS= read -r p` (риск 17) | Низкая | До genesis |
-| 3 | Правило «защищённые PR сливать по одному» в §5 [ci-four-eyes.md](../07-governance/ci-four-eyes.md) (риск 8) | Средняя | До включения |
 | 2 | Добавить `internal/audit/...` и `internal/routersvc` в race-шаг `ci.yml` | Низкая | — |
 | 11 | `aegis-intake export` для разметки SRE | Средняя | Этап 3a |
 | 12 | Golden-набор v6: убрать причину `insufficient_data_policy` из enum при политике не `rollback` | Низкая | Следующая смена набора |
@@ -102,7 +98,7 @@
 
 ## Предлагаемый порядок
 
-1. CI и четыре глаза (п. 3 и п. 8): кодовые правки до genesis (риски 11, 17, 25), затем люди, ключ, настройки GitHub, genesis, `required: true`, RT-11.
+1. CI и четыре глаза (п. 3 и п. 8): люди, ключ, настройки GitHub, genesis, `required: true`, RT-11.
 2. Аудит в KMS и WORM (п. 2): WORM в коде готов (09.11.2026); выбор KMS и подписант, срок хранения, bucket и ключи, прогон на живом bucket'е.
 3. Формальный red-team (п. 5) по готовым сценариям — после п. 2–3.
 4. Развёртывание Vault и RT-18 (п. 4): решение принято 09.11.2026, SPIRE — в MVP-B.

@@ -1,6 +1,6 @@
 # CI, четыре глаза и подписанный policy bundle
 
-> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах два человека (нужен третий), ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
+> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах три человека, ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
 
 Сводка рисков, допущений и непроверенного в бою — [ci-four-eyes-risks.md](ci-four-eyes-risks.md).
 
@@ -13,11 +13,11 @@
 | Что | Пути |
 |---|---|
 | Данные, которые агент встраивает в бинарь | `policy/`, `catalog/`, `eval/golden-synthetic/` (реестр LLM `profiles.json`, промпт, схема ответа, `data/manifest.json`, `assets.go`) |
-| Код, определяющий решения | `internal/pep/`, `policyengine/`, `catalog/`, `step/`, `dataclass/`, `masker/`, `openrouter/`, `routersvc/`, `routerstate/`, `llmrouter/`, `killswitch/`, `audit/`, `intake/`, `pyjson/`, `strictjson/`, `digest/`; все исполняемые `cmd/aegis-*/` (intake, pep, llmrouter, audit, killswitch) |
+| Код, определяющий решения | `internal/pep/`, `policyengine/`, `catalog/`, `step/`, `dataclass/`, `masker/`, `openrouter/`, `routersvc/`, `routerstate/`, `llmrouter/`, `killswitch/`, `audit/`, `intake/`, `pyjson/`, `strictjson/`, `digest/`, `promtext/`; все исполняемые `cmd/aegis-*/` (intake, pep, llmrouter, audit, killswitch) |
 | Сама защита и сборка | `internal/bundle/`, `internal/foureyes/`, `internal/sbom/`, `cmd/aegis-ci/`, `.github/`, `deploy/`, `go.mod`, `go.sum`, `scripts/pin-actions.sh` |
 | Документы с нормативным значением | `docs/03-autonomy/`, `docs/02-security/data-classes.md`, `docs/02-security/identity-secrets-mvp-a.md` |
 
-Не защищён `internal/promtext/`: он только форматирует метрики Prometheus и решений не принимает. Не защищены тесты eval на Python и остальные документы.
+Весь код и встраиваемые файлы, попадающие в бинари, защищены; это проверяет `TestBuildDepsProtected` (`cmd/aegis-ci/protected_deps_test.go`: `go list -deps` для `cmd/aegis-*` под linux/amd64 плюс листинг каталогов пакетов). В `eval/golden-synthetic/` правила заданы точными путями (glob в правилах нет, каталог целиком не защищён из-за `require: security` у `profiles.json` и частых коммитов эталонов). Новый файл сборки там требует правила в four-eyes.json и CODEOWNERS в том же PR, иначе красная проверка `go`. Остаточный риск: при обходе ruleset'а администратором файл без правила пройдёт с `changed=false` (риск 2). Python-тесты eval и прочие документы не защищены.
 
 Для `internal/dataclass/`, `internal/masker/`, `eval/golden-synthetic/profiles.json`, `docs/02-security/data-classes.md` и `docs/02-security/identity-secrets-mvp-a.md` обязательно одобрение группы `security` (`require`).
 
@@ -51,7 +51,7 @@
 
 Группы и роли ([raci.md](raci.md) §4): `policy-owners` — оператор платформы, `sre-leads` — SRE-лид, `security` — security. Ревьюер environment `policy-signing` — отдельный человек (security или SRE-лид), не автор слияния. Identity агента (`aegis-agent[bot]`) в `excluded` и ни в одной группе.
 
-**Состав групп (09.11.2026):** `policy-owners` и `sre-leads` — `limpjungle` (SRE-лид, он же пока оператор платформы), `security` — `trix13371` (право write подтверждено). В CODEOWNERS оба логина. Автор PR одобрять не может, поэтому PR от `limpjungle` получает только одно одобрение (`trix13371`) из двух нужных и не сливается, пока в `policy-owners` или `sre-leads` не появится ещё один человек; PR от `trix13371` одобрить может только `limpjungle` — тоже одно. Это сознательная блокировка, а не сбой: четыре глаза достижимы с третьим участником.
+**Состав групп (09.11.2026):** `policy-owners` — `limpjungle` (SRE-лид, он же пока оператор платформы); `sre-leads` — `limpjungle`, `Oltix146`; `security` — `trix13371`. У всех троих право write подтверждено, в CODEOWNERS все три логина. Автор PR одобрять не может; два одобрения из двух разных групп набираются при любом авторе: PR от `limpjungle` — `Oltix146` (sre-leads) и `trix13371` (security); PR от `Oltix146` — `limpjungle` и `trix13371`; PR от `trix13371` — `limpjungle` (policy-owners) и `Oltix146` (sre-leads). Для путей с `require: security` (`profiles.json`, `dataclass/`, `masker/`, `data-classes.md`, `identity-secrets-mvp-a.md`) обязательно одобрение `trix13371`, поэтому PR от него в эти пути не сливается — нужен второй участник `security`.
 
 ## 4. Policy bundle
 
@@ -87,6 +87,8 @@ Bundle покрывает **данные**, а не код: код, опреде
 8. Строится манифест (`sequence = prev + 1`), запись `unsigned.json`.
 
 Цепочка требует squash-merge (ruleset разрешает только его). Не работает без неё: merge-коммит и rebase-merge рвут соответствие «коммит main = слитый PR».
+
+**Слияние в main — по одному, пока идёт подпись.** Группа `concurrency` держит один выполняющийся и один ожидающий прогон, третий push отменяет ожидающий. Любое слияние, в том числе незащищённое, может отменить ожидающий прогон защищённого коммита и разорвать цепочку. Правило: после слияния PR, меняющего защищённые пути, ничего не сливать, пока его прогон `policy-bundle` не завершён (выпущен `policy-bundle-N` или `changed=false`). Если прогон отменён — «Починка разрыва» (Re-run по порядку). Merge queue — кандидат на этап 1.
 
 **Починка разрыва.** Если коммит пропущен (прогон отменён, workflow был выключен, bundle не выпущен), следующий `plan` падает по п. 4. Варианты: (1) перезапустить упавшие прогоны `policy-bundle` (Re-run в интерфейсе Actions) строго по порядку коммитов — каждый использует свой SHA; (2) если коммит нельзя подписать (одобрений не было), откатить его PR-ом `git revert`, после чего защищённые файлы вернутся к B0 и п. 3 даст `changed=false`; (3) break-glass (§6).
 

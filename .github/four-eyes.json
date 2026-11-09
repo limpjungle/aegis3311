@@ -1,5 +1,5 @@
 {"schema":"aegisops/four-eyes/v1","min_approvals":2,"min_groups":2,
- "groups":{"policy-owners":["limpjungle"],"sre-leads":["limpjungle"],"security":["trix13371"]},
+ "groups":{"policy-owners":["limpjungle"],"sre-leads":["limpjungle","Oltix146"],"security":["trix13371"]},
  "excluded":["dependabot[bot]", "github-actions[bot]", "aegis-agent[bot]"],
  "protected":[
   {"path":"policy/","groups":["policy-owners","sre-leads","security"],"require":[]},
@@ -38,6 +38,7 @@
   {"path":"internal/pyjson/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"internal/strictjson/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"internal/digest/","groups":["policy-owners","sre-leads","security"],"require":[]},
+  {"path":"internal/promtext/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"go.mod","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"go.sum","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"scripts/pin-actions.sh","groups":["policy-owners","sre-leads","security"],"require":[]},

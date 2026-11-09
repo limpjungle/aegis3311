@@ -1,0 +1,38 @@
+# Правило «четырёх глаз» на PR: ранний отказ и удобство для автора. Источником доверия этот workflow НЕ является: код
+# проверяющего берётся из PR (его можно изменить в самом PR), поэтому одобрения заново проверяет policy-bundle.yml на main
+# по коду и правилам предыдущего подписанного bundle (docs/07-governance/ci-four-eyes.md).
+# Правила — из .github/four-eyes.json на базовом коммите PR. Имя job'а (four-eyes) — контекст required_status_checks.
+name: four-eyes
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  four-eyes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # нужен базовый коммит для чтения правил
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Проверка одобрений
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./cmd/aegis-ci foureyes -repo "$REPO" -pr "$PR" -rules-rev "$BASE_SHA" -git-dir .

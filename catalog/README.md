@@ -22,3 +22,7 @@
 ```
 go test ./internal/catalog ./internal/step ./internal/pep
 ```
+
+## Подпись изменений
+
+Записи каталога входят в подписанный policy bundle (`catalog_digest`): изменение проходит правило четырёх глаз и подписывается CI ([ci-four-eyes.md](../docs/07-governance/ci-four-eyes.md)).

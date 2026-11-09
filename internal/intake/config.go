@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/limpjungle/aegis3311/internal/bundle"
 	"github.com/limpjungle/aegis3311/internal/killswitch"
 	"github.com/limpjungle/aegis3311/internal/killswitch/s3"
 	"github.com/limpjungle/aegis3311/internal/routersvc"
@@ -55,28 +56,39 @@ const maxConfigBytes = 4 << 20
 //
 // Остальные метрики и ключи db_queries — по тому же образцу (полный перечень ключей: DBQueryKeys).
 type Config struct {
-	IntakeID          string            `json:"intake_id"`                   // initiator agent/<intake_id>
-	RouterConfig      string            `json:"router_config"`               // конфигурация aegis-llmrouter (routersvc.Config)
-	StatePath         string            `json:"state_path"`                  // состояние intake (атомарная замена файла)
-	SnapshotDir       string            `json:"snapshot_dir"`                // снимки входа модели
-	Environment       string            `json:"environment"`                 // staging | prod-cloud-hybrid | prod-baremetal
-	PollInterval      string            `json:"poll_interval"`               // 15s
-	Settle            string            `json:"settle"`                      // 2m: ожидание перед снимком
-	CloseAfter        string            `json:"close_after"`                 // 15m успешных опросов без алертов ключа
-	CollectTimeout    string            `json:"collect_timeout"`             // 30s на весь сбор
-	RequestTimeout    string            `json:"request_timeout"`             // 5s на запрос к источнику
-	SnapshotRetention string            `json:"snapshot_retention"`          // 2160h (90 суток)
-	Workers           int               `json:"workers"`                     // 2
-	MaxOpenIncidents  int               `json:"max_open_incidents"`          // 256
-	MaxRoutedPerHour  int               `json:"max_routed_per_service_hour"` // 6
-	Alertmanager      HTTPSource        `json:"alertmanager"`
-	Prometheus        HTTPSource        `json:"prometheus"`
-	Kubernetes        KubeSource        `json:"kubernetes"`
-	Services          []ServiceConfig   `json:"services"`
-	Metrics           []MetricSpec      `json:"metrics"`
-	DBQueries         map[string]string `json:"db_queries"`
-	KillSwitch        *KillSwitchConfig `json:"kill_switch"`    // обязателен: без него intake не запускается
-	MetricsListen     string            `json:"metrics_listen"` // адрес /metrics и /healthz (host:port); пусто — выключено; только serve
+	IntakeID          string              `json:"intake_id"`                   // initiator agent/<intake_id>
+	RouterConfig      string              `json:"router_config"`               // конфигурация aegis-llmrouter (routersvc.Config)
+	StatePath         string              `json:"state_path"`                  // состояние intake (атомарная замена файла)
+	SnapshotDir       string              `json:"snapshot_dir"`                // снимки входа модели
+	Environment       string              `json:"environment"`                 // staging | prod-cloud-hybrid | prod-baremetal
+	PollInterval      string              `json:"poll_interval"`               // 15s
+	Settle            string              `json:"settle"`                      // 2m: ожидание перед снимком
+	CloseAfter        string              `json:"close_after"`                 // 15m успешных опросов без алертов ключа
+	CollectTimeout    string              `json:"collect_timeout"`             // 30s на весь сбор
+	RequestTimeout    string              `json:"request_timeout"`             // 5s на запрос к источнику
+	SnapshotRetention string              `json:"snapshot_retention"`          // 2160h (90 суток)
+	Workers           int                 `json:"workers"`                     // 2
+	MaxOpenIncidents  int                 `json:"max_open_incidents"`          // 256
+	MaxRoutedPerHour  int                 `json:"max_routed_per_service_hour"` // 6
+	Alertmanager      HTTPSource          `json:"alertmanager"`
+	Prometheus        HTTPSource          `json:"prometheus"`
+	Kubernetes        KubeSource          `json:"kubernetes"`
+	Services          []ServiceConfig     `json:"services"`
+	Metrics           []MetricSpec        `json:"metrics"`
+	DBQueries         map[string]string   `json:"db_queries"`
+	KillSwitch        *KillSwitchConfig   `json:"kill_switch"`    // обязателен: без него intake не запускается
+	PolicyBundle      *PolicyBundleConfig `json:"policy_bundle"`  // необязательна: проверка подписанного policy bundle (T-24)
+	MetricsListen     string              `json:"metrics_listen"` // адрес /metrics и /healthz (host:port); пусто — выключено; только serve
+}
+
+// PolicyBundleConfig — проверка подписанного policy bundle при старте (serve и replay без -prepare-only). Секции нет —
+// проверка выключена (предупреждение policy_bundle_missing). Секция есть и required=false — bundle проверяется полностью,
+// но отказ только предупреждает (policy_bundle_unverified). required=true — отказ проверки — код 2 до приёма инцидентов.
+// Ключи подписи bundle не должны совпадать с ключом аудита и ключами kill switch (код 2 независимо от required).
+type PolicyBundleConfig struct {
+	Path     string           `json:"path"`     // подписанный bundle (policy-bundle.json из релиза policy-bundle-N)
+	Required bool             `json:"required"` // true — без валидного bundle intake не запускается
+	Keys     []bundle.KeySpec `json:"keys"`     // открытые ключи подписи bundle
 }
 
 // KillSwitchConfig — kill switch (architecture.md §2.2). Секреты S3 (ключи доступа) — только из файлов в
@@ -309,6 +321,9 @@ func (c Config) Validate() error {
 	if err := c.validateKillSwitch(); err != nil {
 		return err
 	}
+	if err := c.validatePolicyBundle(); err != nil {
+		return err
+	}
 	if c.MetricsListen != "" && !validListenAddr(c.MetricsListen) {
 		return bad("metrics_listen: ожидается host:port")
 	}
@@ -519,6 +534,43 @@ func (c Config) validateKillSwitch() error {
 	}
 	if o.CAFile != "" && !filepath.IsAbs(o.CAFile) {
 		return bad("oob.ca_file должен быть абсолютным путём")
+	}
+	return nil
+}
+
+// bundleIssuerRe — допустимый issuer ключа подписи bundle (как у ключей kill switch).
+var bundleIssuerRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$`)
+
+// validatePolicyBundle: секция необязательна; если есть — абсолютные пути, хотя бы один ключ, корректные issuer'ы и
+// непересечение ключей bundle с ключами kill switch и ключом аудита (последний сверяет intake при старте: здесь файлов нет).
+func (c Config) validatePolicyBundle() error {
+	p := c.PolicyBundle
+	if p == nil {
+		return nil
+	}
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("конфигурация intake: policy_bundle: "+format, a...)
+	}
+	if !filepath.IsAbs(p.Path) {
+		return bad("path должен быть абсолютным путём")
+	}
+	if len(p.Keys) == 0 || len(p.Keys) > 8 {
+		return bad("keys: от 1 до 8 ключей")
+	}
+	paths := map[string]bool{}
+	for _, k := range c.KillSwitch.Keys {
+		paths[filepath.Clean(k.Path)] = true
+	}
+	for _, s := range p.Keys {
+		if !filepath.IsAbs(s.Path) {
+			return bad("keys: путь %q должен быть абсолютным", s.Path)
+		}
+		if !bundleIssuerRe.MatchString(s.Issuer) {
+			return bad("keys: некорректный issuer %q", s.Issuer)
+		}
+		if paths[filepath.Clean(s.Path)] {
+			return bad("keys: файл ключа %s входит и в ключи kill switch", s.Path)
+		}
 	}
 	return nil
 }

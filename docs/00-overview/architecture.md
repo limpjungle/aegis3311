@@ -82,6 +82,16 @@ AegisOps AI — платформа автономной эксплуатации
 - **S3.** Только https; запросы GET и PUT подписаны AWS Signature V4 (stdlib), ключи доступа — из файлов, перечитываются на каждый запрос; intake получает отдельную read-only пару.
 - **Ещё не сделано:** канал через etcd / Control Plane (этап 1), доставка kill switch агентам Cluster Agent (MVP-B), подтверждение «не остановлен» по lease.
 
+
+#### Реализация (Этап 0a): policy bundle
+
+Подробности, настройки GitHub и процедуры — [ci-four-eyes.md](../07-governance/ci-four-eyes.md); угроза T-24, RT-11.
+
+- **Что подписывается.** Манифест `aegisops/policy-bundle/v1` (`internal/bundle`): файлы с sha256 (политики Rego, каталог, реестр LLM, промпт и схема ответа), дайджесты `policy_bundle_digest` (тот же, что в вердикте PEP), `catalog_digest`, `llm_assets_digest`, `sequence`, коммит и предыдущий коммит, одобрения (PR, автор, `head_sha`, одобрившие с группами), подписи ed25519. Набор путей — одна таблица в `internal/bundle/content.go`.
+- **Выпуск.** По каждому push в main `policy-bundle.yml` повторно проверяет одобрения слитого PR по правилам предыдущего подписанного bundle (`.github/four-eyes.json`: два человека из разных групп, не автор), проверяет цепочку коммитов и подписывает манифест в environment с ручным подтверждением. Релиз `policy-bundle-N` несёт `policy-bundle.json` и провенанс Sigstore.
+- **Проверка у агента (MVP-A).** Политики встроены в бинарь. `aegis-intake serve` и `replay` при старте читают bundle (секция `policy_bundle` конфигурации), проверяют подпись, одобрения и совпадение со встроенным содержимым; журнал `policy_bundle_verified`. Секция необязательна, `required: false` — отказ только предупреждает, `required: true` — код 2 до приёма инцидентов. TTL, отзыв и монотонность у агента — MVP-B (поле `sequence` заложено).
+- **Артефакты.** `release.yml` по тегу собирает пять бинарей linux/amd64 только из коммита main с подписанным bundle; SBOM CycloneDX 1.5 (`aegis-ci sbom`), провенанс SLSA и аттестация SBOM (Sigstore). Образов пока нет, подпись образов — вместе с ними.
+
 ### 2.3 Cluster Agent
 
 Содержит PEP, исполнитель каталога действий, клиент lease'ов, локальный кэш политик и буфер аудита. Права выдаются только на действия каталога (RBAC), не cluster-admin. Identity агента — SPIFFE/SPIRE, секреты — короткоживущие (Vault).
@@ -110,7 +120,7 @@ Staging, chaos-стенд и Digital Twin вынесены из инфрастр
 | Избыточные права | cluster-admin у агента | Identity на агента, RBAC по каталогу, короткоживущие креды, JIT-доступ |
 | Самоизменение | Агент правит политики, уровни или audit | Политики и уровни меняют только люди; audit log append-only (WORM), правки запрещены всем. Агент не может approve и merge собственные PR (CODEOWNERS, branch protection) |
 | Утечка данных во внешний LLM | Код, логи, PII | Классы данных (public / internal / confidential / restricted), маскирование PII и секретов до отправки, режим «только локальная модель» для restricted и изолированных контуров, zero-retention в договорах, data residency |
-| Supply chain | Образы, зависимости, модели | SBOM, подпись образов (cosign), SLSA-провенанс, Trivy, закрепление версий моделей и embedding-моделей |
+| Supply chain | Образы, зависимости, модели | SBOM, подпись образов (cosign), SLSA-провенанс, Trivy, закрепление версий моделей и embedding-моделей. **Этап 0a:** actions закреплены по SHA, SBOM CycloneDX и провенанс бинарей в `release.yml`, подписанный policy bundle ([ci-four-eyes.md](../07-governance/ci-four-eyes.md)); образов и их подписи пока нет |
 | Компрометация Cluster Agent | Большой blast radius | Минимальные права, сетевые политики, attestation, отзыв identity, kill switch на кластер |
 | eBPF-инструменты | Привилегированные DaemonSet, PII в payload'ах | Минимальные capabilities, проверка совместимости с ядрами (особенно на Bare Metal), бюджет оверхеда, маскирование payload'ов, выбор по зрелости проекта |
 | Отравление знаний | Ложные выводы в постмортемах | Утверждение SRE, версионирование, TTL записей |

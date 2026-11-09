@@ -1,0 +1,42 @@
+# Владельцы защищённых путей. Файл согласован с .github/four-eyes.json: путь и множество владельцев
+# (объединение групп правила) проверяет cmd/aegis-ci/codeowners_test.go. Правит человек, затем обе записи — вместе.
+# Пока в группах только @limpjungle: до появления ревьюеров четыре глаза не достижимы (docs/07-governance/ci-four-eyes.md).
+/policy/ @limpjungle
+/catalog/ @limpjungle
+/docs/03-autonomy/ @limpjungle
+/eval/golden-synthetic/profiles.json @limpjungle
+/eval/golden-synthetic/prompt/ @limpjungle
+/eval/golden-synthetic/schema/ @limpjungle
+/eval/golden-synthetic/data/manifest.json @limpjungle
+/eval/golden-synthetic/assets.go @limpjungle
+/internal/pep/ @limpjungle
+/internal/policyengine/ @limpjungle
+/internal/catalog/ @limpjungle
+/internal/step/ @limpjungle
+/internal/dataclass/ @limpjungle
+/internal/masker/ @limpjungle
+/internal/openrouter/ @limpjungle
+/internal/routersvc/ @limpjungle
+/internal/llmrouter/ @limpjungle
+/internal/killswitch/ @limpjungle
+/internal/bundle/ @limpjungle
+/internal/foureyes/ @limpjungle
+/internal/sbom/ @limpjungle
+/cmd/aegis-ci/ @limpjungle
+/.github/ @limpjungle
+/docs/02-security/data-classes.md @limpjungle
+/cmd/aegis-intake/ @limpjungle
+/cmd/aegis-pep/ @limpjungle
+/cmd/aegis-llmrouter/ @limpjungle
+/cmd/aegis-audit/ @limpjungle
+/cmd/aegis-killswitch/ @limpjungle
+/internal/audit/ @limpjungle
+/internal/intake/ @limpjungle
+/internal/routerstate/ @limpjungle
+/internal/pyjson/ @limpjungle
+/internal/strictjson/ @limpjungle
+/internal/digest/ @limpjungle
+/go.mod @limpjungle
+/go.sum @limpjungle
+/scripts/pin-actions.sh @limpjungle
+/deploy/ @limpjungle

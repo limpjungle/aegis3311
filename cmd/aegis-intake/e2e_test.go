@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,7 +37,7 @@ func newStack(t *testing.T) *stack {
 	return &stack{cfgPath, chain, getenv, keys, tr, cfg}
 }
 
-func (s *stack) env(out, errb *bytes.Buffer) env {
+func (s *stack) env(out, errb io.Writer) env {
 	return env{getenv: s.getenv, stdout: out, stderr: errb, deps: routersvc.Deps{Transport: s.tr}, live: newLive}
 }
 
@@ -116,16 +118,34 @@ func exitCode(err error) int {
 	return classify(err)
 }
 
+// syncBuf — буфер, безопасный для записи журнала из горутин intake и чтения из теста.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 type running struct {
 	done   chan error
 	cancel context.CancelFunc
-	out    *bytes.Buffer
-	errb   *bytes.Buffer
+	out    *syncBuf
+	errb   *syncBuf
 }
 
 func (s *stack) start(t *testing.T, e func(env) env) *running {
 	t.Helper()
-	r := &running{done: make(chan error, 1), out: &bytes.Buffer{}, errb: &bytes.Buffer{}}
+	r := &running{done: make(chan error, 1), out: &syncBuf{}, errb: &syncBuf{}}
 	var ctx context.Context
 	ctx, r.cancel = context.WithCancel(context.Background())
 	en := s.env(r.out, r.errb)

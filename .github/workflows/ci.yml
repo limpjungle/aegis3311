@@ -1,0 +1,76 @@
+# Сборка и тесты. Секретов нет, права только на чтение; pull_request_target не используется.
+# Кэш setup-go включён только здесь: в подписи bundle и в релизе cache: false (отравление кэша — путь в артефакт).
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Устаревшие прогоны PR отменяются; прогоны main — нет.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local # версию Go даёт go.mod через setup-go, без скачивания другой
+
+jobs:
+  # Имена job'ов (go, race, eval) — контексты required_status_checks в docs/07-governance/rulesets/main.json.
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Проверка модулей
+        run: go mod verify
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "Не отформатированы:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: Сборка
+        run: go build ./...
+      - name: Тесты
+        run: go test ./...
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Тесты с детектором гонок
+        run: go test -race ./internal/killswitch/... ./internal/intake/... ./internal/promtext/ ./cmd/aegis-intake/ ./cmd/aegis-killswitch/
+
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Тесты eval (только stdlib)
+        working-directory: eval/golden-synthetic
+        run: python3 -B -m unittest && python3 -B selftest.py

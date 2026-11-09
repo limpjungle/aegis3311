@@ -25,4 +25,7 @@ func TestDocExampleConfigValid(t *testing.T) {
 	if len(cfg.Metrics) != 13 {
 		t.Errorf("метрик %d, ожидается 13", len(cfg.Metrics))
 	}
+	if cfg.PolicyBundle == nil || cfg.PolicyBundle.Required || len(cfg.PolicyBundle.Keys) != 1 {
+		t.Errorf("policy_bundle в примере: %+v", cfg.PolicyBundle)
+	}
 }

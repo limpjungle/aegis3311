@@ -8,7 +8,7 @@
 
 ## Ревью
 
-Изменения идут через PR с тестами `*_test.rego` (владелец домена + SRE-лид). Изменение любого не-тестового `.rego` меняет `policy_bundle_digest`. Список `forbidden_patterns` должен совпадать с `catalog.ForbiddenPatterns` (`TestForbiddenPatternsSync`).
+Каталог защищён правилом четырёх глаз: изменение подписывается policy bundle ([ci-four-eyes.md](../docs/07-governance/ci-four-eyes.md)), файлы входят в манифест с sha256. Изменения идут через PR с тестами `*_test.rego` (владелец домена + SRE-лид). Изменение любого не-тестового `.rego` меняет `policy_bundle_digest`. Список `forbidden_patterns` должен совпадать с `catalog.ForbiddenPatterns` (`TestForbiddenPatternsSync`).
 
 ## Проверка
 

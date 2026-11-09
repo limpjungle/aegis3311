@@ -2,6 +2,8 @@
 
 > Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах один человек, ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
 
+Сводка рисков, допущений и непроверенного в бою — [ci-four-eyes-risks.md](ci-four-eyes-risks.md).
+
 Репозиторий `limpjungle/aegis3311` публичный и личный (владелец — пользователь, не организация): команд нет, в CODEOWNERS только логины, одобрения засчитываются только от пользователей с правом write. Rulesets, environments с обязательными ревьюерами и artifact attestations доступны бесплатно.
 
 ## 1. Что защищаем
@@ -13,9 +15,9 @@
 | Данные, которые агент встраивает в бинарь | `policy/`, `catalog/`, `eval/golden-synthetic/` (реестр LLM `profiles.json`, промпт, схема ответа, `data/manifest.json`, `assets.go`) |
 | Код, определяющий решения | `internal/pep/`, `policyengine/`, `catalog/`, `step/`, `dataclass/`, `masker/`, `openrouter/`, `routersvc/`, `routerstate/`, `llmrouter/`, `killswitch/`, `audit/`, `intake/`, `pyjson/`, `strictjson/`, `digest/`; все исполняемые `cmd/aegis-*/` (intake, pep, llmrouter, audit, killswitch) |
 | Сама защита и сборка | `internal/bundle/`, `internal/foureyes/`, `internal/sbom/`, `cmd/aegis-ci/`, `.github/`, `deploy/`, `go.mod`, `go.sum`, `scripts/pin-actions.sh` |
+| Документы с нормативным значением | `docs/03-autonomy/`, `docs/02-security/data-classes.md` |
 
 Не защищён `internal/promtext/`: он только форматирует метрики Prometheus и решений не принимает. Не защищены тесты eval на Python и остальные документы.
-| Документы с нормативным значением | `docs/03-autonomy/`, `docs/02-security/data-classes.md` |
 
 Для `internal/dataclass/`, `internal/masker/`, `eval/golden-synthetic/profiles.json` и `docs/02-security/data-classes.md` обязательно одобрение группы `security` (`require`).
 

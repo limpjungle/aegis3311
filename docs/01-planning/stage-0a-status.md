@@ -77,9 +77,9 @@
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
 | 3 | ~~Группы в `.github/four-eyes.json` и CODEOWNERS~~ Сделано 09.11.2026: `sre-leads` — `limpjungle`, `Oltix146`; `security` — `trix13371` | Решено | — |
-| 3 | Применить rulesets и environments `policy-signing`, `release` | **Блокер shadow** | Группы, ключ |
-| 3 | Отключить merge-коммит и rebase в настройках репозитория (риск 14) | **Блокер shadow** | — |
-| 3 | Ограничить круг write; проверить и включить immutable releases для `policy-bundle-*` (риск 6) | Средняя | — |
+| 3 | Применить rulesets `main` и `tags` (environments `policy-signing`, `release` созданы 09.11.2026: ревьюеры `trix13371`, `Oltix146`, `prevent_self_review`) | **Блокер shadow** | Ключ и секрет `POLICY_BUNDLE_SIGNING_KEY` |
+| 3 | ~~Отключить merge-коммит и rebase~~ Сделано 09.11.2026: только squash | Решено | — |
+| 3 | ~~Круг write и immutable releases~~ Проверено 09.11.2026: write — `trix13371`, `Oltix146` (admin — `limpjungle`); immutable releases включены | Решено | — |
 | 3 | Genesis-bundle (`workflow_dispatch`, `genesis=true`) | **Блокер shadow** | Rulesets, ключ |
 | 3 | `policy_bundle.required: true` у intake | **Блокер shadow** | Genesis |
 | 2 | Секция `audit.anchor` в конфигурации intake на стенде | **Блокер shadow** | Bucket, ключи |

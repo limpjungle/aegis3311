@@ -110,7 +110,7 @@ Bundle покрывает **данные**, а не код: код, опреде
 
 ## 8. Настройки GitHub (команды, не применены)
 
-Решение 08.11.2026: файлы в репозитории есть, **настройки не применены**. Применяет владелец после чек-листа.
+Решение 08.11.2026: файлы в репозитории есть; применяет владелец после чек-листа. **Применено 09.11.2026:** только squash-merge (`allow_merge_commit` и `allow_rebase_merge` = false, `delete_branch_on_merge` = true); environments `policy-signing` (только ветка `main`) и `release` (только теги `v*`) с ревьюерами `trix13371` и `Oltix146` и `prevent_self_review`; immutable releases включены (`gh api repos/limpjungle/aegis3311/immutable-releases` → `enabled: true`; `gh release create` с файлами загружает ассеты до публикации, поэтому совместим). **Не применено:** ruleset'ы `main` и `tags` — последними, после ключа подписи; секрет `POLICY_BUNDLE_SIGNING_KEY` не создан.
 
 ```bash
 # Ruleset main и теги (тела — в репозитории)

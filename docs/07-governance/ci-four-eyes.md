@@ -108,9 +108,9 @@ Bundle покрывает **данные**, а не код: код, опреде
 
 Остаточные риски (отражены в [threat-model.md](../02-security/threat-model.md) §7.2): два одобривших из одной группы могут изменить workflow и тем обойти сборку проверяющего из B0 (ревьюер environment — барьер); проверяющий и правила four-eyes при genesis берутся из S; если S добавляет новый встроенный набор файлов (новая строка в `sources()`), проверяющий из B0 его не включит, и такой bundle не пройдёт сверку с деревом S — это отказ, а не обход; агент в MVP-A не сравнивает `sequence` с ранее виденным: откат на старый подписанный bundle не отличим, если содержимое сборки совпадает с ним (монотонность, TTL и отзыв — MVP-B, T-21); число коммитов в PR от 250 — отказ (предел API GitHub), а соавторы, указанные только трейлером `Co-authored-by`, проверке не видны; bundle покрывает данные, а не код; цепочка требует squash; в MVP-A администратор — корень доверия; обязательность проверки у агента наступает только после деплоя сборки с проверкой и включения `required: true`.
 
-## 8. Настройки GitHub (команды, не применены)
+## 8. Настройки GitHub (команды)
 
-Решение 08.11.2026: файлы в репозитории есть; применяет владелец после чек-листа. **Применено 09.11.2026:** только squash-merge (`allow_merge_commit` и `allow_rebase_merge` = false, `delete_branch_on_merge` = true); environments `policy-signing` (только ветка `main`) и `release` (только теги `v*`) с ревьюерами `trix13371` и `Oltix146` и `prevent_self_review`; immutable releases включены (`gh api repos/limpjungle/aegis3311/immutable-releases` → `enabled: true`; `gh release create` с файлами загружает ассеты до публикации, поэтому совместим). **Не применено:** ruleset'ы `main` и `tags` — последними, после ключа подписи; секрет `POLICY_BUNDLE_SIGNING_KEY` не создан.
+Решение 08.11.2026: файлы в репозитории есть; применяет владелец после чек-листа. **Применено 09.11.2026:** только squash-merge (`allow_merge_commit` и `allow_rebase_merge` = false, `delete_branch_on_merge` = true); environments `policy-signing` (только ветка `main`) и `release` (только теги `v*`) с ревьюерами `trix13371` и `Oltix146` и `prevent_self_review`; immutable releases включены (`gh api repos/limpjungle/aegis3311/immutable-releases` → `enabled: true`; `gh release create` с файлами загружает ассеты до публикации, поэтому совместим). Затем создан секрет `POLICY_BUNDLE_SIGNING_KEY` и применены ruleset'ы: `main: четыре глаза` (id 26882802) и `теги релизов и policy bundle` (id 26882804), оба `active`, `bypass_actors: []`; `integration_id` 15368 сверен по check run'ам `go`, `race`, `eval` коммита `5030477`. С этого момента прямой push в `main` невозможен, в том числе владельцу.
 
 ```bash
 # Ruleset main и теги (тела — в репозитории)
@@ -140,8 +140,10 @@ gh api -X POST repos/limpjungle/aegis3311/environments/release/deployment-branch
 JSON
 
 # Ключ подписи bundle
-go run ./cmd/aegis-ci bundle keygen -priv policy-ci.key -pub policy-ci.pub   # офлайн
-gh secret set POLICY_BUNDLE_SIGNING_KEY --env policy-signing < policy-ci.key
+# офлайн; приватный ключ — вне репозитория, открытый — в deploy/policy-bundle/keys/
+go run ./cmd/aegis-ci bundle keygen -priv ~/aegis-keys/policy-ci.key -pub deploy/policy-bundle/keys/ci-policy-signing.pub
+gh secret set POLICY_BUNDLE_SIGNING_KEY --env policy-signing < ~/aegis-keys/policy-ci.key
+shred -u ~/aegis-keys/policy-ci.key
 ```
 
 Закрепление версий actions: `scripts/pin-actions.sh owner/repo vX.Y.Z` печатает `owner/repo@<sha> # vX.Y.Z` (только чтение). Обновляет их Dependabot ([dependabot.yml](../../.github/dependabot.yml)); PR проходят те же проверки. Входы actions v7/v8 (`persist-credentials`, `go-version-file`, `cache`, `subject-path`, `sbom-path`) при первом прогоне сверьте с документацией каждого action: версии выбраны без запуска.

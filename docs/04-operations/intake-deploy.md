@@ -224,7 +224,7 @@ aegis_sessions_by_state:
 
 ## Пример конфигурации
 
-Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE`. Секция `kill_switch` обязательна (без неё intake не запускается); `metrics_listen` необязателен (пусто — метрики выключены, см. «Kill switch», шаг 7); пути ключей и пример `oob` — см. «Kill switch» ниже. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
+Секреты — только из файлов: `OPENROUTER_API_KEY_FILE`, `AEGIS_MASKER_KEY_FILE`, `AEGIS_AUDIT_KEY_FILE`, `AEGIS_AUDIT_S3_ACCESS_KEY_ID_FILE`, `AEGIS_AUDIT_S3_SECRET_KEY_FILE`, `AEGIS_KUBE_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE`, `AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE` и необязательные `AEGIS_ALERTMANAGER_TOKEN_FILE`, `AEGIS_PROMETHEUS_TOKEN_FILE`, `AEGIS_KILLSWITCH_S3_SESSION_TOKEN_FILE` (носители и пути Vault — [инвентаризация](../02-security/identity-secrets-mvp-a.md#3-инвентаризация-секретов)). Секция `kill_switch` обязательна (без неё intake не запускается); `metrics_listen` необязателен (пусто — метрики выключены, см. «Kill switch», шаг 7); пути ключей и пример `oob` — см. «Kill switch» ниже. Подстановки в запросах — только `$namespace`, `$service`, `$database`, `$pg_cluster`, и только из реестра `services`, не из алерта. Сокращено: показаны не все 13 метрик; ключи `db_queries` перечислены полностью (`intake.DBQueryKeys`) и обязательны, если у какого-то сервиса задан `database`.
 
 ```json
 {
@@ -250,7 +250,7 @@ aegis_sessions_by_state:
     ],
     "poll_interval": "10s", "max_skew": "2m",
     "configmap": {"namespace": "aegisops-control", "name": "kill-switch"},
-    "oob": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis-kill-switch", "key": "kill-switch.json", "path_style": true, "ca_file": ""}
+    "oob": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis3311-kill-switch", "key": "kill-switch.json", "path_style": true, "ca_file": ""}
   },
   "policy_bundle": {"path": "/etc/aegis/policy-bundle.json", "required": false, "keys": [{"path": "/etc/aegis/keys/policy-ci-1.pub", "issuer": "ci/policy-signing"}]},
   "services": [
@@ -318,22 +318,95 @@ aegis_sessions_by_state:
 
 Поведение при пустом результате: в `metrics` запрос без серий даёт секцию без элементов (статус `empty`); в `db_queries` пустой вектор — ошибка (агрегаты неполны, `db.aggregates` критичен), поэтому запросы, у которых «нет данных» значит «ноль», заканчиваются на `or vector(0)`.
 
+## Бакеты в Yandex Object Storage *(решение 09.11.2026)*
+
+Нужны два бакета Yandex Object Storage, класс хранения **Standard** для обоих: объекты маленькие и читаются постоянно (опрос kill switch, сверка checkpoint'ов на старте), холодные классы только удорожают чтение. Имена глобально уникальны, поэтому с префиксом репозитория; если имя занято — взять другое и поменять `bucket` в конфигурации.
+
+| | `aegis3311-kill-switch` | `aegis3311-audit-worm` |
+|---|---|---|
+| Назначение | Внешний (out-of-band) канал kill switch, шаг 3 выше | Checkpoint'ы цепочки аудита, раздел «WORM для checkpoint'ов аудита» ниже |
+| Где | Отдельное облако или каталог, не там, где кластер | Отдельный каталог, лучше не тот, что у kill switch |
+| Версионирование | Включено | Включено |
+| Object Lock | Не нужен (объект перезаписывают дежурные и renewer) | Включён; режим по умолчанию **не задавать** — сервис ставит COMPLIANCE и срок на каждый объект |
+| Шифрование KMS-ключом | По желанию | **Не включать**: удаление KMS-ключа сделает checkpoint'ы нечитаемыми — обход WORM. Если требуется — ключ в отдельном каталоге с защитой от удаления |
+| Доступ | Приватный; без CDN, без хостинга сайта; path-style | Приватный; без CDN, без хостинга сайта; path-style |
+| Lifecycle | `renew/` — удаление через 7 дней | Нет (удаление запрещено Object Lock) |
+| Ключи | Три разные пары: intake (только чтение `kill-switch.json`), дежурные, renewer — шаг 3 | Отдельный сервисный аккаунт: `PutObject`, `GetObject` (с версиями), `ListBucketVersions`, без Delete |
+
+Порядок для `aegis3311-audit-worm`: COMPLIANCE необратим до истечения срока, поэтому сначала тестовый бакет с `retention: "24h"` — прогнать `aegis-audit checkpoint` и `verify -anchor-config`, попытаться удалить версию объекта (ожидается 403) и проверить пункт 6 раздела WORM. Боевой `retention` — только после утверждения срока хранения Security (`trix13371`) и compliance.
+
 ## WORM для checkpoint'ов аудита *(09.11.2026)*
 
-1. Bucket в **отдельном аккаунте/каталоге**: включить версионирование и Object Lock, режим по умолчанию не обязателен — сервис ставит COMPLIANCE и срок на каждый checkpoint (`retention`, например `8760h`; режим необратим до истечения срока, выбирать осознанно).
+1. Bucket `aegis3311-audit-worm` (см. [«Бакеты в Yandex Object Storage»](#бакеты-в-yandex-object-storage-решение-09112026)) в **отдельном аккаунте/каталоге**: включить версионирование и Object Lock, режим по умолчанию не обязателен — сервис ставит COMPLIANCE и срок на каждый checkpoint (`retention`, например `8760h`; режим необратим до истечения срока, выбирать осознанно).
 2. Отдельная пара ключей сервисного аккаунта (не ключи kill switch): `PutObject`, `GetObject` (включая версии), `ListBucketVersions`; **без** `DeleteObject`/`DeleteObjectVersion`. Пути — в `AEGIS_AUDIT_S3_ACCESS_KEY_ID_FILE`, `AEGIS_AUDIT_S3_SECRET_KEY_FILE`, необязательно `AEGIS_AUDIT_S3_SESSION_TOKEN_FILE`.
 3. В конфигурации роутера (`router_config`):
 
 ```json
 "audit": {"chain": "...", "chain_id": "aegis-prod", "public_keys": [],
   "anchor": {"kind": "s3", "interval": "5m", "max_lag": "1h",
-    "s3": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis-audit-worm",
+    "s3": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis3311-audit-worm",
            "prefix": "prod/", "path_style": true, "retention": "8760h", "timeout": "10s"}}}
 ```
 
 4. Алерты: `aegis_intake_audit_anchor_enabled == 0` (anchor выключен), `aegis_intake_audit_anchor_lag_seconds > 3600` (синхронно с `max_lag`), `rate(aegis_intake_audit_anchor_errors_total[15m]) > 0`, давность `aegis_intake_audit_anchor_last_success_timestamp_seconds`.
 5. Проверка: `aegis-audit checkpoint ... -anchor-config FILE`, затем `aegis-audit verify ... -id CHAIN_ID -anchor-config FILE` (в выводе `checkpoints_checked`). Те же `AEGIS_AUDIT_S3_*` в окружении.
 6. Не проверено на живом Yandex Object Storage: per-object lock-заголовки без default retention, lock-заголовки в ответе GET, точный XML `?versions` — проверить до включения в shadow.
+
+## Секреты: Vault Agent
+
+Решение — [identity-secrets-mvp-a.md](../02-security/identity-secrets-mvp-a.md). Vault Agent работает init-контейнером: входит по projected-токену с audience `vault`, пишет файлы в tmpfs с правами `0400` и завершается. В поде после старта токена Vault нет; у процесса intake его нет вообще. Фрагмент пода (сокращено):
+
+```yaml
+spec:
+  serviceAccountName: aegis-intake
+  automountServiceAccountToken: false
+  initContainers:
+    - name: vault-agent
+      image: <образ Vault Agent или OpenBao Agent, закреплённый по digest>
+      args: ["agent", "-config=/vault/config/aegis-intake.json"]
+      securityContext: {runAsUser: 10001, runAsNonRoot: true, readOnlyRootFilesystem: true}
+      volumeMounts:
+        - {name: vault-token, mountPath: /var/run/secrets/vault, readOnly: true}   # только здесь
+        - {name: vault-config, mountPath: /vault/config, readOnly: true}
+        - {name: vault-ca, mountPath: /vault/ca, readOnly: true}
+        - {name: secrets, mountPath: /vault/secrets}
+  containers:
+    - name: intake
+      securityContext: {runAsUser: 10001, runAsNonRoot: true, readOnlyRootFilesystem: true}
+      env:
+        - {name: OPENROUTER_API_KEY_FILE, value: /vault/secrets/openrouter}
+        - {name: AEGIS_MASKER_KEY_FILE, value: /vault/secrets/masker}
+        - {name: AEGIS_AUDIT_KEY_FILE, value: /vault/secrets/audit-signing}
+        - {name: AEGIS_ALERTMANAGER_TOKEN_FILE, value: /vault/secrets/alertmanager}
+        - {name: AEGIS_PROMETHEUS_TOKEN_FILE, value: /vault/secrets/prometheus}
+        - {name: AEGIS_KILLSWITCH_S3_ACCESS_KEY_ID_FILE, value: /vault/secrets/killswitch-s3-access-key-id}
+        - {name: AEGIS_KILLSWITCH_S3_SECRET_KEY_FILE, value: /vault/secrets/killswitch-s3-secret-key}
+        - {name: AEGIS_AUDIT_S3_ACCESS_KEY_ID_FILE, value: /vault/secrets/audit-anchor-s3-access-key-id}
+        - {name: AEGIS_AUDIT_S3_SECRET_KEY_FILE, value: /vault/secrets/audit-anchor-s3-secret-key}
+        - {name: AEGIS_KUBE_TOKEN_FILE, value: /var/run/secrets/kube/token}
+      volumeMounts:
+        - {name: secrets, mountPath: /vault/secrets, readOnly: true}
+        - {name: kube-token, mountPath: /var/run/secrets/kube, readOnly: true}
+  volumes:
+    - name: secrets
+      emptyDir: {medium: Memory}
+    - name: kube-token
+      projected:
+        sources: [{serviceAccountToken: {audience: https://kubernetes.default.svc, expirationSeconds: 3600, path: token}}]
+    - name: vault-token
+      projected:
+        sources: [{serviceAccountToken: {audience: vault, expirationSeconds: 600, path: token}}]
+    - {name: vault-config, configMap: {name: aegis-intake-vault-agent}}
+    - {name: vault-ca, configMap: {name: vault-ca}}
+```
+
+Дополнительно:
+
+- У init-контейнера и intake одинаковый `runAsUser`: иначе файлы `0400` не читаются (проверить на стенде).
+- NetworkPolicy: egress к Vault (порт 8200) разрешён только поду `aegis-intake`; ingress в Vault — только от подов агентов и CI-применителя.
+- Политика, роль и конфигурация агента лежат в [`deploy/vault/`](../../deploy/vault/); меняются только через PR с четырьмя глазами.
+- Секреты читаются при старте пода. Ротация — rolling restart; автоматической ротации нет (цена отсутствия живого токена).
+- Vault недоступен или секрет не найден: init-контейнер завершается с ошибкой, под не стартует (fail-closed). Для kill switch это допустимо: intake без состояния не работает.
 
 ## Проверка перед shadow
 

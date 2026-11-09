@@ -11,10 +11,10 @@
 | # | Пункт | Состояние | Важность |
 |---|---|---|---|
 | 1 | Калибровка ежедневной пробы v5 | Идёт с 08.11.2026, freeze ≈ 28–30.11.2026 | **Блокер shadow** |
-| 2 | Аудит: подпись через KMS/HSM, checkpoint'ы в WORM (T-23, P1) | WORM в коде сделан; KMS-подписанта нет (ключ в файле); bucket не создан, на живом Yandex Object Storage не проверено | **Блокер shadow** |
+| 2 | Аудит: подпись через KMS/HSM, checkpoint'ы в WORM (T-23, P1) | WORM в коде сделан; KMS-подписанта нет (ключ в файле; Vault Transit стал естественным кандидатом, выбор не сделан); bucket не создан, на живом Yandex Object Storage не проверено | **Блокер shadow** |
 | 3 | Четыре глаза на изменения политик (T-24, P1; RT-11) | Механизмы в репозитории ([ci-four-eyes.md](../07-governance/ci-four-eyes.md)); не включено | **Блокер shadow** |
-| 4 | SPIFFE/SPIRE и Vault (plan.md §0a п. 2; T-35, P1; RT-17) | Нет; секреты — файлы через переменные окружения | **Блокер** по модели угроз, кандидат на пересмотр объёма |
-| 5 | Базовый red-team RT-01…RT-08, RT-11, RT-17 | Тесты RT-01…RT-04, RT-07, RT-08 есть; формального прогона и отчёта нет | **Блокер shadow** |
+| 4 | SPIFFE/SPIRE и Vault (plan.md §0a п. 2; T-36, P1; RT-18) | Решено 09.11.2026 (Security): SPIRE (T-35, RT-17) в MVP-B; Vault/OpenBao в MVP-A как хранилище секретов ([identity-secrets-mvp-a.md](../02-security/identity-secrets-mvp-a.md)); документ решения и `deploy/vault/` в репозитории; развёртывания нет; открытые вопросы — [identity-secrets-mvp-a.md §10](../02-security/identity-secrets-mvp-a.md#10-что-осталось-нерешённым-на-09112026) | **Блокер shadow** (T-36 — P1) |
+| 5 | Базовый red-team RT-01…RT-08, RT-11, RT-18 | Тесты RT-01…RT-04, RT-07, RT-08 есть; формального прогона и отчёта нет | **Блокер shadow** |
 | 6 | Egress только через роутер (T-17, P1) | NetworkPolicy описана в [intake-deploy.md](../04-operations/intake-deploy.md), не применена | Высокая |
 | 7 | Kill switch: стенд и учение G0 | Код и [runbook учения](../04-operations/kill-switch-drill.md) готовы | Высокая (критерий выхода G0; стенд нужен до shadow) |
 | 8 | Подпись артефактов: SBOM, cosign, SLSA (plan.md §0a п. 11) | `release.yml` готов (SBOM CycloneDX 1.5, провенанс SLSA, аттестация SBOM); не запускался; образов нет | Высокая |
@@ -31,13 +31,15 @@
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
 | 1 | Набрать 20 точек калибровки v5, следить за ночными прогонами, заморозить набор | **Блокер shadow** | Время |
-| 2 | Выбрать KMS для подписи цепочки аудита (Yandex KMS — только ECDSA/RSA, без Ed25519; Vault Transit; HSM) | **Блокер shadow** | — |
+| 2 | Выбрать KMS для подписи цепочки аудита (Yandex KMS — только ECDSA/RSA, без Ed25519; Vault Transit — нужен живой токен в поде, противоречит init-режиму Vault Agent и требует пересмотра T-36; HSM) | **Блокер shadow** | — |
 | 2 | Утвердить срок хранения checkpoint'ов в WORM (режим COMPLIANCE необратим до истечения срока) — Security и compliance | **Блокер shadow** | До создания bucket'а |
 | 2 | Принять (или отклонить) отступление от T-23: отставание выгрузки не блокирует запись до G1 — Security | Высокая | — |
-| 3 | Найти минимум двух ревьюеров помимо владельца | **Блокер shadow** | — |
+| 3 | Найти ещё одного ревьюера в `policy-owners` или `sre-leads` (оператор платформы или второй SRE-лид). Сейчас (09.11.2026): `limpjungle` — SRE-лид, `trix13371` — security; автор PR не одобряет, поэтому двух одобрений пока не набрать | **Блокер shadow** | — |
 | 3 | Прогнать RT-11 вручную на живом репозитории | **Блокер shadow** | Включение четырёх глаз |
-| 4 | Решение Security: развернуть SPIRE/Vault или формально сузить объём для MVP-A | **Блокер** | — |
-| 5 | Формальный прогон red-team и отчёт (RT-05/RT-06 — от RAG, RT-11 — от п. 3, RT-17 — от п. 4) | **Блокер shadow** | п. 2–4 |
+| 4 | ~~Решение Security: развернуть SPIRE/Vault или сузить объём~~ Принято 09.11.2026: SPIRE в MVP-B, Vault/OpenBao в MVP-A | Решено | — |
+| 4 | Выбрать Vault или OpenBao (лицензия BSL 1.1 — legal; unseal: Yandex KMS у Vault, у OpenBao проверить) | Высокая, до развёртывания | — |
+| 4 | Токены Alertmanager и Prometheus: в коде необязательны, а шаблоны агента требуют оба секрета в KV — загружать всегда или сделать шаблоны условными | Средняя | — |
+| 5 | Формальный прогон red-team и отчёт (RT-05/RT-06 — от RAG, RT-11 — от п. 3, RT-18 — от развёртывания Vault) | **Блокер shadow** | п. 2–4 |
 | 7 | Провести учение G0 по kill switch | Высокая | Стенд (инфраструктура) |
 | 9 | Решить, нужен ли RAG в MVP-A | Средняя | — |
 | 10 | Подтвердить статус DPA с OpenRouter (ZDR), legal, DPIA, инвентаризации ПДн | **Блокер** | — |
@@ -48,12 +50,14 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
-| 2 | Создать bucket аудита: версионирование, Object Lock COMPLIANCE, отдельный аккаунт ([intake-deploy.md](../04-operations/intake-deploy.md)) | **Блокер shadow** | Срок хранения |
+| 2 | Создать бакет `aegis3311-audit-worm` (Yandex Object Storage, Standard, версионирование, Object Lock без режима по умолчанию, без KMS-шифрования, отдельный каталог — [intake-deploy.md](../04-operations/intake-deploy.md#бакеты-в-yandex-object-storage-решение-09112026)); сначала тестовый бакет с `retention: 24h` | **Блокер shadow** | Срок хранения (для боевого) |
 | 2 | Прогнать `aegis-audit checkpoint`/`verify` на живом bucket'е: per-object заголовки lock без default retention, lock-заголовки в GET, формат XML `?versions`, `DELETE` версии → 403 | **Блокер shadow** | Bucket |
 | 2 | Алерты на `aegis_intake_audit_anchor_lag_seconds` и `aegis_intake_audit_anchor_errors_total` | Высокая | Bucket |
-| 4 | Развернуть SPIRE и Vault (если не сузят объём) | **Блокер** | Решение Security |
+| 4 | Развернуть Vault/OpenBao в HA (Raft, auto-unseal), два audit device и алерты, Kubernetes auth, применение политик из `deploy/vault/`, сверка расхождений с Git, recovery-ключи | **Блокер shadow** | Выбор Vault или OpenBao |
+| 4 | Проверить на dev-Vault и dev-OpenBao: под не стартует при отсутствующем пути в KV (не пустой файл); нужен ли агенту записываемый `/tmp` при `readOnlyRootFilesystem`; intake читает файлы `0400` при одинаковом `runAsUser` | Высокая | Dev-стенд |
+| 4 | Подставить реальные `vault.address` и `vault.ca_cert` в `deploy/vault/agent/aegis-intake.json` (сейчас условные) | Средняя | Развёртывание Vault |
 | 6 | Применить NetworkPolicy egress и проверить на стенде | Высокая | — |
-| 7 | Стенд kill switch: ConfigMap и RBAC, bucket, расписание renewer, `check` во внешнем мониторинге | Высокая | Ключи kill switch |
+| 7 | Стенд kill switch: ConfigMap и RBAC, бакет `aegis3311-kill-switch` (Standard, версионирование, без Object Lock, отдельное облако/каталог), расписание renewer, `check` во внешнем мониторинге | Высокая | Ключи kill switch |
 | 8 | Образы и их подпись cosign — когда появятся образы | Высокая | — |
 | 9 | Индексация runbook'ов и Qdrant с аутентификацией (T-20) | Средняя | Решение по RAG |
 
@@ -61,6 +65,7 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
+| 4 | Загрузить секреты intake в Vault KV (`aegis-kv/data/mvp-a/…`) с response wrapping при передаче | **Блокер shadow** | Развёртывание Vault |
 | 2 | Ключ подписи цепочки аудита в KMS | **Блокер shadow** | Выбор KMS, подписант в коде |
 | 2 | Отдельная пара S3-ключей для выгрузки checkpoint'ов: `PutObject`, `GetObject(Version)`, `ListBucketVersions`, без Delete (`AEGIS_AUDIT_S3_*_FILE`) | **Блокер shadow** | Bucket |
 | 3 | Ключ подписи policy bundle офлайн → секрет environment `policy-signing`; ключи в `deploy/policy-bundle/keys.json` | **Блокер shadow** | Ревьюеры |
@@ -71,7 +76,7 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
-| 3 | Группы в `.github/four-eyes.json` и CODEOWNERS с новыми ревьюерами (один PR) | **Блокер shadow** | Ревьюеры |
+| 3 | Группы в `.github/four-eyes.json` и CODEOWNERS: `security` — `trix13371` внесён (09.11.2026); добавить третьего участника, когда появится (один PR) | **Блокер shadow** | Ревьюер |
 | 3 | Применить rulesets и environments `policy-signing`, `release` | **Блокер shadow** | Группы, ключ |
 | 3 | Отключить merge-коммит и rebase в настройках репозитория (риск 14) | **Блокер shadow** | — |
 | 3 | Ограничить круг write; проверить и включить immutable releases для `policy-bundle-*` (риск 6) | Средняя | — |
@@ -100,4 +105,4 @@
 1. CI и четыре глаза (п. 3 и п. 8): кодовые правки до genesis (риски 11, 17, 25), затем люди, ключ, настройки GitHub, genesis, `required: true`, RT-11.
 2. Аудит в KMS и WORM (п. 2): WORM в коде готов (09.11.2026); выбор KMS и подписант, срок хранения, bucket и ключи, прогон на живом bucket'е.
 3. Формальный red-team (п. 5) по готовым сценариям — после п. 2–3.
-4. Решение по SPIRE/Vault (п. 4): развёртывать или формально сузить для MVP-A — утверждает Security.
+4. Развёртывание Vault и RT-18 (п. 4): решение принято 09.11.2026, SPIRE — в MVP-B.

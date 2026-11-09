@@ -1,6 +1,6 @@
 # CI, четыре глаза и подписанный policy bundle
 
-> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах один человек, ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
+> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах два человека (нужен третий), ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
 
 Сводка рисков, допущений и непроверенного в бою — [ci-four-eyes-risks.md](ci-four-eyes-risks.md).
 
@@ -15,11 +15,11 @@
 | Данные, которые агент встраивает в бинарь | `policy/`, `catalog/`, `eval/golden-synthetic/` (реестр LLM `profiles.json`, промпт, схема ответа, `data/manifest.json`, `assets.go`) |
 | Код, определяющий решения | `internal/pep/`, `policyengine/`, `catalog/`, `step/`, `dataclass/`, `masker/`, `openrouter/`, `routersvc/`, `routerstate/`, `llmrouter/`, `killswitch/`, `audit/`, `intake/`, `pyjson/`, `strictjson/`, `digest/`; все исполняемые `cmd/aegis-*/` (intake, pep, llmrouter, audit, killswitch) |
 | Сама защита и сборка | `internal/bundle/`, `internal/foureyes/`, `internal/sbom/`, `cmd/aegis-ci/`, `.github/`, `deploy/`, `go.mod`, `go.sum`, `scripts/pin-actions.sh` |
-| Документы с нормативным значением | `docs/03-autonomy/`, `docs/02-security/data-classes.md` |
+| Документы с нормативным значением | `docs/03-autonomy/`, `docs/02-security/data-classes.md`, `docs/02-security/identity-secrets-mvp-a.md` |
 
 Не защищён `internal/promtext/`: он только форматирует метрики Prometheus и решений не принимает. Не защищены тесты eval на Python и остальные документы.
 
-Для `internal/dataclass/`, `internal/masker/`, `eval/golden-synthetic/profiles.json` и `docs/02-security/data-classes.md` обязательно одобрение группы `security` (`require`).
+Для `internal/dataclass/`, `internal/masker/`, `eval/golden-synthetic/profiles.json`, `docs/02-security/data-classes.md` и `docs/02-security/identity-secrets-mvp-a.md` обязательно одобрение группы `security` (`require`).
 
 ## 2. Три слоя
 
@@ -51,7 +51,7 @@
 
 Группы и роли ([raci.md](raci.md) §4): `policy-owners` — оператор платформы, `sre-leads` — SRE-лид, `security` — security. Ревьюер environment `policy-signing` — отдельный человек (security или SRE-лид), не автор слияния. Identity агента (`aegis-agent[bot]`) в `excluded` и ни в одной группе.
 
-**Временно (решение 08.11.2026):** во всех трёх группах и в CODEOWNERS один логин `limpjungle`. Правило при этом работает, но два одобрения от разных людей получить нельзя, поэтому PR в защищённые пути без появления ревьюеров не сливаются: это сознательная блокировка, а не сбой.
+**Состав групп (09.11.2026):** `policy-owners` и `sre-leads` — `limpjungle` (SRE-лид, он же пока оператор платформы), `security` — `trix13371` (право write подтверждено). В CODEOWNERS оба логина. Автор PR одобрять не может, поэтому PR от `limpjungle` получает только одно одобрение (`trix13371`) из двух нужных и не сливается, пока в `policy-owners` или `sre-leads` не появится ещё один человек; PR от `trix13371` одобрить может только `limpjungle` — тоже одно. Это сознательная блокировка, а не сбой: четыре глаза достижимы с третьим участником.
 
 ## 4. Policy bundle
 

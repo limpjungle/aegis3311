@@ -1,0 +1,11 @@
+{
+  "path": {
+    "aegis-kv/data/mvp-a/intake/openrouter": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/intake/masker": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/intake/audit-signing": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/intake/alertmanager": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/intake/prometheus": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/intake/killswitch-s3": {"capabilities": ["read"]},
+    "aegis-kv/data/mvp-a/audit-anchor": {"capabilities": ["read"]}
+  }
+}

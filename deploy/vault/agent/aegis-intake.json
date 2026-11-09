@@ -1,0 +1,17 @@
+{
+  "vault": {"address": "https://vault.vault.svc:8200", "ca_cert": "/vault/ca/ca.pem"},
+  "auto_auth": {"method": {"type": "kubernetes", "mount_path": "auth/kubernetes", "config": {"role": "aegis-intake", "token_path": "/var/run/secrets/vault/token"}}},
+  "exit_after_auth": true,
+  "template_config": {"exit_on_retry_failure": true},
+  "template": [
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/openrouter\" }}{{ .Data.data.api_key }}{{ end }}", "destination": "/vault/secrets/openrouter", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/masker\" }}{{ .Data.data.key }}{{ end }}", "destination": "/vault/secrets/masker", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/audit-signing\" }}{{ .Data.data.key }}{{ end }}", "destination": "/vault/secrets/audit-signing", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/alertmanager\" }}{{ .Data.data.token }}{{ end }}", "destination": "/vault/secrets/alertmanager", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/prometheus\" }}{{ .Data.data.token }}{{ end }}", "destination": "/vault/secrets/prometheus", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/killswitch-s3\" }}{{ .Data.data.access_key_id }}{{ end }}", "destination": "/vault/secrets/killswitch-s3-access-key-id", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/intake/killswitch-s3\" }}{{ .Data.data.secret_key }}{{ end }}", "destination": "/vault/secrets/killswitch-s3-secret-key", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/audit-anchor\" }}{{ .Data.data.access_key_id }}{{ end }}", "destination": "/vault/secrets/audit-anchor-s3-access-key-id", "perms": "0400", "error_on_missing_key": true},
+    {"contents": "{{ with secret \"aegis-kv/data/mvp-a/audit-anchor\" }}{{ .Data.data.secret_key }}{{ end }}", "destination": "/vault/secrets/audit-anchor-s3-secret-key", "perms": "0400", "error_on_missing_key": true}
+  ]
+}

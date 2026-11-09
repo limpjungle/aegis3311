@@ -1,42 +1,44 @@
 # Владельцы защищённых путей. Файл согласован с .github/four-eyes.json: путь и множество владельцев
 # (объединение групп правила) проверяет cmd/aegis-ci/codeowners_test.go. Правит человек, затем обе записи — вместе.
-# Пока в группах только @limpjungle: до появления ревьюеров четыре глаза не достижимы (docs/07-governance/ci-four-eyes.md).
-/policy/ @limpjungle
-/catalog/ @limpjungle
-/docs/03-autonomy/ @limpjungle
-/eval/golden-synthetic/profiles.json @limpjungle
-/eval/golden-synthetic/prompt/ @limpjungle
-/eval/golden-synthetic/schema/ @limpjungle
-/eval/golden-synthetic/data/manifest.json @limpjungle
-/eval/golden-synthetic/assets.go @limpjungle
-/internal/pep/ @limpjungle
-/internal/policyengine/ @limpjungle
-/internal/catalog/ @limpjungle
-/internal/step/ @limpjungle
-/internal/dataclass/ @limpjungle
-/internal/masker/ @limpjungle
-/internal/openrouter/ @limpjungle
-/internal/routersvc/ @limpjungle
-/internal/llmrouter/ @limpjungle
-/internal/killswitch/ @limpjungle
-/internal/bundle/ @limpjungle
-/internal/foureyes/ @limpjungle
-/internal/sbom/ @limpjungle
-/cmd/aegis-ci/ @limpjungle
-/.github/ @limpjungle
-/docs/02-security/data-classes.md @limpjungle
-/cmd/aegis-intake/ @limpjungle
-/cmd/aegis-pep/ @limpjungle
-/cmd/aegis-llmrouter/ @limpjungle
-/cmd/aegis-audit/ @limpjungle
-/cmd/aegis-killswitch/ @limpjungle
-/internal/audit/ @limpjungle
-/internal/intake/ @limpjungle
-/internal/routerstate/ @limpjungle
-/internal/pyjson/ @limpjungle
-/internal/strictjson/ @limpjungle
-/internal/digest/ @limpjungle
-/go.mod @limpjungle
-/go.sum @limpjungle
-/scripts/pin-actions.sh @limpjungle
-/deploy/ @limpjungle
+# Группы (09.11.2026): policy-owners и sre-leads — @limpjungle, security — @trix13371. Для PR автора @limpjungle
+# этого недостаточно: нужен ещё один ревьюер из policy-owners или sre-leads (docs/07-governance/ci-four-eyes.md §3).
+/policy/ @limpjungle @trix13371
+/catalog/ @limpjungle @trix13371
+/docs/03-autonomy/ @limpjungle @trix13371
+/eval/golden-synthetic/profiles.json @limpjungle @trix13371
+/eval/golden-synthetic/prompt/ @limpjungle @trix13371
+/eval/golden-synthetic/schema/ @limpjungle @trix13371
+/eval/golden-synthetic/data/manifest.json @limpjungle @trix13371
+/eval/golden-synthetic/assets.go @limpjungle @trix13371
+/internal/pep/ @limpjungle @trix13371
+/internal/policyengine/ @limpjungle @trix13371
+/internal/catalog/ @limpjungle @trix13371
+/internal/step/ @limpjungle @trix13371
+/internal/dataclass/ @limpjungle @trix13371
+/internal/masker/ @limpjungle @trix13371
+/internal/openrouter/ @limpjungle @trix13371
+/internal/routersvc/ @limpjungle @trix13371
+/internal/llmrouter/ @limpjungle @trix13371
+/internal/killswitch/ @limpjungle @trix13371
+/internal/bundle/ @limpjungle @trix13371
+/internal/foureyes/ @limpjungle @trix13371
+/internal/sbom/ @limpjungle @trix13371
+/cmd/aegis-ci/ @limpjungle @trix13371
+/.github/ @limpjungle @trix13371
+/docs/02-security/data-classes.md @limpjungle @trix13371
+/docs/02-security/identity-secrets-mvp-a.md @limpjungle @trix13371
+/cmd/aegis-intake/ @limpjungle @trix13371
+/cmd/aegis-pep/ @limpjungle @trix13371
+/cmd/aegis-llmrouter/ @limpjungle @trix13371
+/cmd/aegis-audit/ @limpjungle @trix13371
+/cmd/aegis-killswitch/ @limpjungle @trix13371
+/internal/audit/ @limpjungle @trix13371
+/internal/intake/ @limpjungle @trix13371
+/internal/routerstate/ @limpjungle @trix13371
+/internal/pyjson/ @limpjungle @trix13371
+/internal/strictjson/ @limpjungle @trix13371
+/internal/digest/ @limpjungle @trix13371
+/go.mod @limpjungle @trix13371
+/go.sum @limpjungle @trix13371
+/scripts/pin-actions.sh @limpjungle @trix13371
+/deploy/ @limpjungle @trix13371

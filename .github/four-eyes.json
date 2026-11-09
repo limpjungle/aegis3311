@@ -1,5 +1,5 @@
 {"schema":"aegisops/four-eyes/v1","min_approvals":2,"min_groups":2,
- "groups":{"policy-owners":["limpjungle"],"sre-leads":["limpjungle"],"security":["limpjungle"]},
+ "groups":{"policy-owners":["limpjungle"],"sre-leads":["limpjungle"],"security":["trix13371"]},
  "excluded":["dependabot[bot]", "github-actions[bot]", "aegis-agent[bot]"],
  "protected":[
   {"path":"policy/","groups":["policy-owners","sre-leads","security"],"require":[]},
@@ -26,6 +26,7 @@
   {"path":"cmd/aegis-ci/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":".github/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"docs/02-security/data-classes.md","groups":["policy-owners","sre-leads","security"],"require":["security"]},
+  {"path":"docs/02-security/identity-secrets-mvp-a.md","groups":["policy-owners","sre-leads","security"],"require":["security"]},
   {"path":"cmd/aegis-intake/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"cmd/aegis-pep/","groups":["policy-owners","sre-leads","security"],"require":[]},
   {"path":"cmd/aegis-llmrouter/","groups":["policy-owners","sre-leads","security"],"require":[]},

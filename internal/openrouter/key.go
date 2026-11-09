@@ -22,7 +22,7 @@ func (APIKey) MarshalText() ([]byte, error) { return []byte("***"), nil }
 func (k APIKey) value() string              { return k.v }
 
 // LoadAPIKey читает файл из переменной OPENROUTER_API_KEY_FILE (getenv инжектируется).
-// Переменная OPENROUTER_API_KEY не читается: ключ — только из файла (Vault agent).
+// Переменная OPENROUTER_API_KEY не читается: ключ — только из файла (файл от Vault Agent (Vault/OpenBao)).
 // Ошибки содержат имя переменной и errno, но не содержимое файла.
 func LoadAPIKey(getenv func(string) string) (APIKey, error) {
 	const env = "OPENROUTER_API_KEY_FILE"

@@ -19,7 +19,7 @@ const (
 var (
 	// Образ OpenBao в строке `openbao) … digest=sha256:…` стенда run.sh: боевые values обязаны указывать тот же digest.
 	reRunDigest   = regexp.MustCompile(`(?s)\n\s*openbao\)[^\n]*\n[^\n]*digest=(sha256:[0-9a-f]{64})`)
-	reTLSDisable  = regexp.MustCompile(`tls_disable\s*=\s*(1|true|"true")`)
+	reTLSDisable  = regexp.MustCompile(`(?i)tls_disable\s*=\s*"?(1|t|true)"?\b`)
 	reTLSCert     = regexp.MustCompile(`tls_cert_file\s*=`)
 	reStorageRaft = regexp.MustCompile(`storage\s+"raft"`)
 	reAudit       = regexp.MustCompile(`\baudit\s+"[^"]+"\s+"([^"]+)"`)
@@ -193,6 +193,12 @@ func TestOpenBaoHANegativeCases(t *testing.T) {
 		{"tlsDisable true", "global.tlsDisable", yamlMut(func(m map[string]any) { set(m, true, "global", "tlsDisable") })},
 		{"tls_disable = 1", "tls_disable", cfgMut(func(c string) string {
 			return strings.Replace(needs(c, "tls_min_version"), "tls_min_version", "tls_disable = 1\n  tls_min_version", 1)
+		})},
+		{`tls_disable = "1" (строка)`, "tls_disable", cfgMut(func(c string) string {
+			return strings.Replace(needs(c, "tls_min_version"), "tls_min_version", "tls_disable = \"1\"\n  tls_min_version", 1)
+		})},
+		{"tls_disable = TRUE", "tls_disable", cfgMut(func(c string) string {
+			return strings.Replace(needs(c, "tls_min_version"), "tls_min_version", "tls_disable = TRUE\n  tls_min_version", 1)
 		})},
 		{`seal "static"`, "§9", cfgMut(func(c string) string { return c + "\nseal \"static\" {\n  current_key_id = \"k\"\n}\n" })},
 		{"один audit device", "audit device", cfgMut(func(c string) string {

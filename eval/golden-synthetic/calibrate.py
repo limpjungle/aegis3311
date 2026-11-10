@@ -115,11 +115,18 @@ def metrics_for(cases, pred_rows, ref_rows):
     return m, len(cases)
 
 
+def reference_agreement(cases, ref_rows):
+    """Максимальное согласие с эталоном по выбранным кейсам, по последней строке каждого ID."""
+    answers = {row["id"]: row.get("answer") for row in ref_rows}
+    valid = sum(1 for case in cases
+                if (answer := answers.get(case["id"])) is not None and not score.validate(answer))
+    return round(100 * valid / len(cases), 3)
+
+
 def reference_levels(cases, ref_rows):
     """Значения, от которых считается отклонение до заморозки базы."""
     m, _ = metrics_for(cases, ref_rows, ref_rows)
-    valid = sum(1 for r in ref_rows if r.get("answer") is not None and not score.validate(r["answer"]))
-    m["decision_agreement"] = round(100 * valid / len(cases), 3)   # максимум, достижимый против этого эталона
+    m["decision_agreement"] = reference_agreement(cases, ref_rows)
     return m
 
 
@@ -188,6 +195,11 @@ def load_state(base, profile, tag, ref_path, ref_meta, cases, ref_rows, set_sha)
         if st["reference"]["sha256"] != sha256_file(ref_path):
             raise CalibError("calibration state belongs to another reference; a new reference needs an approved reset "
                              f"(move {os.path.relpath(path, base)} aside and start a new calibration)")
+        if len({p["run_id"] for p in st["points"]}) != len(st["points"]):
+            raise CalibError(f"duplicate run IDs in {os.path.relpath(path, base)}; rebuild calibration from probe runs")
+        if st["reference_levels"]["decision_agreement"] != reference_agreement(cases, ref_rows):
+            raise CalibError(f"reference decision_agreement does not match {os.path.relpath(path, base)}; "
+                             "rebuild calibration from probe runs")
         return st
     return {"profile": profile, "created_at": now(), "set_sha256": set_sha,
             "reference": {"file": os.path.relpath(ref_path, base), "sha256": sha256_file(ref_path),
@@ -239,6 +251,7 @@ def cmd_update(base, profile, out):
         point["verdict"] = overall(findings)
         point["findings"] = [{"level": a, "metric": b, "detail": c} for a, b, c in findings]
         st["points"].append(point)
+        known.add(point["run_id"])
         verdict, last_findings, added = point["verdict"], findings, added + 1
     st["updated_at"] = now()
     write_json_atomic(state_path(base, profile, tag), st)
@@ -256,6 +269,8 @@ def cmd_update(base, profile, out):
 
 
 def cmd_freeze(base, profile, min_points, force, out):
+    if min_points < 1:
+        raise CalibError("--min-points must be >= 1")
     cases, ref_path, ref_meta, ref_rows, set_sha, tag = context(base, profile)
     st = load_state(base, profile, tag, ref_path, ref_meta, cases, ref_rows, set_sha)
     if st.get("frozen") and not force:

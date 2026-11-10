@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -123,8 +124,45 @@ class TestPreFreeze(CalibTestCase):
         self.cmd("update")
         self.assertEqual(len(self.state()["points"]), 1)
 
+    def test_duplicate_files_count_as_one_run(self):
+        run_id = self.add_run()
+        original = os.path.join(self.base, "runs", PROFILE, f"probe-{run_id}.jsonl")
+        duplicate = os.path.join(os.path.dirname(original), "copy.jsonl")
+        shutil.copyfile(original, duplicate)
+        shutil.copyfile(original + ".meta.json", duplicate + ".meta.json")
+
+        self.assertEqual(self.cmd("update"), 0, self.out)
+        self.assertEqual([p["run_id"] for p in self.state()["points"]], [run_id])
+        self.assertEqual(self.cmd("freeze", "--min-points", "2"), 2)
+
 
 class TestFreeze(CalibTestCase):
+    def test_min_points_must_be_positive(self):
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                err = io.StringIO()
+                with patch("sys.stderr", err):
+                    self.assertEqual(self.cmd("freeze", "--min-points", value), 2)
+                self.assertIn("--min-points must be >= 1", err.getvalue())
+        self.assertFalse(os.path.exists(calibrate.state_path(self.base, PROFILE, self.tag)))
+
+    def test_existing_duplicate_points_require_rebuild(self):
+        self.add_run()
+        self.assertEqual(self.cmd("update"), 0)
+        state = self.state()
+        state["points"].append(state["points"][0])
+        path = calibrate.state_path(self.base, PROFILE, self.tag)
+        calibrate.write_json_atomic(path, state)
+        with open(path, "rb") as f:
+            before = f.read()
+
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self.assertEqual(self.cmd("freeze", "--min-points", "2"), 2)
+        self.assertIn("duplicate run IDs", err.getvalue())
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
     def test_needs_min_points(self):
         for _ in range(5):
             self.add_run()
@@ -173,6 +211,23 @@ class TestAfterFreeze(CalibTestCase):
 
 
 class TestReferenceGuard(CalibTestCase):
+    def test_reference_agreement_counts_only_selected_case_ids(self):
+        rows = self.oracle + [self.oracle[0], {**self.oracle[0], "id": "unrelated-case"}]
+        self.assertEqual(calibrate.reference_levels(self.cases, rows)["decision_agreement"], 100.0)
+
+    def test_existing_wrong_reference_agreement_requires_rebuild(self):
+        self.assertEqual(self.cmd("update"), 0)
+        state = self.state()
+        state["reference_levels"]["decision_agreement"] = 100.157
+        path = calibrate.state_path(self.base, PROFILE, self.tag)
+        calibrate.write_json_atomic(path, state)
+
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self.assertEqual(self.cmd("update"), 2)
+        self.assertIn("reference decision_agreement does not match", err.getvalue())
+        self.assertEqual(self.state(), state)
+
     def test_state_tied_to_reference(self):
         self.add_run()
         self.cmd("update")

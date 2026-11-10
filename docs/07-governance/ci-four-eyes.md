@@ -1,6 +1,6 @@
 # CI, четыре глаза и подписанный policy bundle
 
-> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** код и файлы есть, но настройки GitHub не применены, в группах три человека, ключа подписи нет, а проверка у агента выключена (`policy_bundle.required: false`). Включение — по [чек-листу](#чек-лист-включения) ниже.
+> Статус: Этап 0a, MVP-A. Закрывает механизмами T-24 (инсайдер меняет политику, каталог, матрицу или реестр LLM) и подпись артефактов платформы ([stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3 и 8). **Пока угроза T-24 не закрыта:** правила GitHub применены, ключ создан, [genesis-bundle](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-1) и [второй bundle](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-2) опубликованы. До shadow остаются обязательная проверка у intake (`policy_bundle.required: true`) и RT-11 по [чек-листу](#чек-лист-включения).
 
 Сводка рисков, допущений и непроверенного в бою — [ci-four-eyes-risks.md](ci-four-eyes-risks.md).
 

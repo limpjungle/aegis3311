@@ -189,7 +189,8 @@ class TestRequest(RunnerTestCase):
     def test_body_contents(self):
         c = self.cases[0]
         prompt_bytes = open(os.path.join(self.dir, PROMPT_REL), "rb").read().decode()
-        schema = json.load(open(os.path.join(self.dir, SCHEMA_REL)))
+        with open(os.path.join(self.dir, SCHEMA_REL), encoding="utf-8") as f:
+            schema = json.load(f)
         prof = run.validate_profile(self.cfg, PROFILE, for_network=True)
         body = run.build_request(c["input"], prompt_bytes, schema, self.cfg, prof)
         self.assertEqual(body["messages"][1]["content"], run.canonical_input(c["input"]))
@@ -468,7 +469,8 @@ class TestResume(RunnerTestCase):
 class TestBudget(RunnerTestCase):
     def reserve_of(self, case):
         prof = run.validate_profile(self.cfg, PROFILE, for_network=True)
-        sch = json.load(open(os.path.join(self.dir, SCHEMA_REL)))
+        with open(os.path.join(self.dir, SCHEMA_REL), encoding="utf-8") as f:
+            sch = json.load(f)
         prompt = open(os.path.join(self.dir, PROMPT_REL), encoding="utf-8").read()
         body = run.build_request(case["input"], prompt, sch, self.cfg, prof)
         est, mt = run.estimate_input_tokens(body, self.cfg), body["max_tokens"]
@@ -564,7 +566,8 @@ class TestContext(RunnerTestCase):
     def test_boundary(self):
         c = self.cases[0]
         prof = run.validate_profile(self.cfg, PROFILE, for_network=True)
-        sch = json.load(open(os.path.join(self.dir, SCHEMA_REL)))
+        with open(os.path.join(self.dir, SCHEMA_REL), encoding="utf-8") as f:
+            sch = json.load(f)
         prompt = open(os.path.join(self.dir, PROMPT_REL), encoding="utf-8").read()
         est = run.estimate_input_tokens(run.build_request(c["input"], prompt, sch, self.cfg, prof), self.cfg)
         mt = self.cfg["generation"]["max_tokens"]
@@ -641,6 +644,21 @@ class TestSecrets(RunnerTestCase):
 
 
 class TestScoreCompat(RunnerTestCase):
+    def test_no_common_reference_ids(self):
+        ref_path = self.outpath("ref.jsonl")
+        with open(ref_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "unrelated-case", "answer": None}) + "\n")
+        report = self.outpath("report.json")
+        result = subprocess.run(
+            [sys.executable, "-B", os.path.join(HERE, "score.py"),
+             "--cases", os.path.join(self.dir, DEV_REL), "--pred", ref_path,
+             "--ref", ref_path, "--ref-ids-only", "--out", report],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("no cases to score", result.stderr)
+        self.assertFalse(os.path.exists(report))
+
     def test_oracle_scores_100(self):
         out = self.outpath()
         self.assertEqual(self.go("--limit", "8", "--out", out), 0)

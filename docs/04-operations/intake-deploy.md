@@ -407,6 +407,7 @@ spec:
 - Политика, роль и конфигурация агента лежат в [`deploy/vault/`](../../deploy/vault/); меняются только через PR с четырьмя глазами.
 - Секреты читаются при старте пода. Ротация — rolling restart; автоматической ротации нет (цена отсутствия живого токена).
 - Vault недоступен или секрет не найден: init-контейнер завершается с ошибкой, под не стартует (fail-closed). Для kill switch это допустимо: intake без состояния не работает.
+- OpenBao sealed (после рестарта узлов Shamir требует ввода долей кворумом 2 из 3, [identity-secrets-mvp-a.md §9](../02-security/identity-secrets-mvp-a.md#9-vault-или-openbao)): новые поды intake не стартуют до unseal (init-контейнер повторяет вход с backoff, под остаётся в Pending), уже работающие продолжают — секреты у них в tmpfs. Поэтому для Deployment intake `strategy.rollingUpdate.maxUnavailable: 0`: старый под не убирается, пока новый не стал Ready. Проверено на стенде [`deploy/vault/dev/run-ha.sh`](../../deploy/vault/dev/run-ha.sh).
 
 ## Проверка перед shadow
 

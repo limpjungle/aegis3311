@@ -1,0 +1,12 @@
+# Оверлей HA-стенда (run-ha.sh) поверх ../server/openbao-ha.yaml: одноузловой minikube, малые тома и ресурсы.
+server:
+  image:
+    tag: "2.7.2"   # digest проверяет run-ha.sh на хосте, в кластер образ загружается
+  affinity: ""
+  dataStorage:
+    size: 1Gi
+  auditStorage:
+    size: 1Gi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 384Mi}

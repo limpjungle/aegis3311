@@ -1,0 +1,20 @@
+# Dev-режим OpenBao: in-memory, без TLS, root-токен "root". Только для стенда.
+global:
+  enabled: true
+injector:
+  enabled: false
+csi:
+  enabled: false
+ui:
+  enabled: false
+server:
+  image:
+    registry: docker.io
+    repository: openbao/openbao
+    tag: "2.7.2"   # digest проверяет run.sh на хосте (sha256:5046911075e1…), в кластер образ загружается
+    pullPolicy: IfNotPresent
+  dev:
+    enabled: true
+    devRootToken: root
+  authDelegator:
+    enabled: true

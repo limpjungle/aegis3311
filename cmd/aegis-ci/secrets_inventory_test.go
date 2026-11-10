@@ -200,9 +200,14 @@ type vaultAgent struct {
 	Vault struct {
 		Address string `json:"address"`
 		CACert  string `json:"ca_cert"`
+		Retry   struct {
+			NumRetries int `json:"num_retries"`
+		} `json:"retry"`
 	} `json:"vault"`
 	AutoAuth struct {
-		Method struct {
+		// В JSON-форме HCL блок method — список; объект агент отвергает («one and only one "method" block is required»),
+		// проверено на dev-стенде deploy/vault/dev.
+		Method []struct {
 			Type      string `json:"type"`
 			MountPath string `json:"mount_path"`
 			Config    struct {
@@ -306,7 +311,15 @@ func checkAgent(raw []byte, roleExists func(string) bool, policy, want map[strin
 	if a.Vault.CACert == "" {
 		return errors.New("не задан vault.ca_cert")
 	}
-	m := a.AutoAuth.Method
+	// Без явного предела агент повторяет чтение отсутствующего пути ~5 минут (12 попыток); при малом пределе init-контейнер
+	// падает за секунды, а повторы делает Kubernetes (CrashLoopBackOff, видно в мониторинге).
+	if n := a.Vault.Retry.NumRetries; n < 1 || n > 5 {
+		return fmt.Errorf("vault.retry.num_retries %d: нужно от 1 до 5", n)
+	}
+	if len(a.AutoAuth.Method) != 1 {
+		return fmt.Errorf("auto_auth.method: %d блоков, нужен ровно один", len(a.AutoAuth.Method))
+	}
+	m := a.AutoAuth.Method[0]
 	if m.Type != "kubernetes" || m.MountPath == "" {
 		return fmt.Errorf("auto_auth.method: type %q, mount_path %q", m.Type, m.MountPath)
 	}
@@ -512,6 +525,21 @@ func TestVaultNegativeCases(t *testing.T) {
 			return checkAgent(mutate(t, agentRaw, func(m map[string]any) {
 				tmpl0(m)["contents"] = `{{ with secret "aegis-kv/data/mvp-a/other" }}{{ .Data.data.v }}{{ end }}`
 			}), existsIn("roles"), pol, want)
+		}},
+		{"method объектом", "method", func() error {
+			return checkAgent(mutate(t, agentRaw, func(m map[string]any) {
+				aa := m["auto_auth"].(map[string]any)
+				aa["method"] = aa["method"].([]any)[0]
+			}), existsIn("roles"), pol, want)
+		}},
+		{"два method", "нужен ровно один", func() error {
+			return checkAgent(mutate(t, agentRaw, func(m map[string]any) {
+				aa := m["auto_auth"].(map[string]any)
+				aa["method"] = append(aa["method"].([]any), aa["method"].([]any)[0])
+			}), existsIn("roles"), pol, want)
+		}},
+		{"без предела повторов", "num_retries", func() error {
+			return checkAgent(mutate(t, agentRaw, func(m map[string]any) { delete(m["vault"].(map[string]any), "retry") }), existsIn("roles"), pol, want)
 		}},
 		{"exit_after_auth false", "exit_after_auth", func() error {
 			return checkAgent(mutate(t, agentRaw, func(m map[string]any) { m["exit_after_auth"] = false }), existsIn("roles"), pol, want)

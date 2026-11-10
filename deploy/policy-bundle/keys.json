@@ -1,1 +1,4 @@
-[]
+[
+  {"path": "keys/ci-policy-signing.pub", "issuer": "ci/policy-signing"},
+  {"path": "keys/break-glass.pub", "issuer": "ci/break-glass"}
+]

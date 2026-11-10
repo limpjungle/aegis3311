@@ -109,7 +109,7 @@ RT-18 выполняется после развёртывания Vault; в Э�
 
 ## 9. Vault или OpenBao
 
-Описываем как «Vault/OpenBao»: конфигурация, пути и JSON совместимы. Выбор не сделан.
+**Решение 10.11.2026: OpenBao** (MPL 2.0 — без согласования лицензии с legal). Конфигурация, пути и JSON совместимы с Vault; на dev-стенде ([`deploy/vault/dev/`](../../deploy/vault/dev/)) файлы из `deploy/vault/` одинаково работают в OpenBao 2.7.2 и Vault 2.0.4. Имена «Vault», `vault.*` в конфигурации агента и каталог `deploy/vault/` остаются: это формат, а не продукт. Открыт способ unseal (§10, п. 1).
 
 - **Vault** под BSL 1.1: внутреннее использование разрешено, нужно подтверждение legal. В сборке Yandex есть auto-unseal через Yandex KMS.
 - **OpenBao** под MPL 2.0, но, насколько известно, не имеет нативного seal для Yandex KMS. Варианты: Shamir, transit seal или PKCS#11 — проверить.
@@ -118,7 +118,7 @@ RT-18 выполняется после развёртывания Vault; в Э�
 
 | № | Вопрос | Что сделать | Важность | Зависит от |
 |---|---|---|---|---|
-| 1 | Vault или OpenBao (§9) | Legal подтверждает BSL 1.1 для Vault; для OpenBao проверить способ unseal (Shamir, transit seal, PKCS#11) | Высокая | — |
+| 1 | ~~Vault или OpenBao (§9)~~ Выбран OpenBao (10.11.2026). Остаётся unseal: нативного seal для Yandex KMS у OpenBao нет — выбрать Shamir (ручной unseal кворумом после каждого рестарта), transit seal (второй экземпляр OpenBao) или PKCS#11 (HSM) | Выбрать способ unseal и проверить его на стенде | Высокая | — |
 | 2 | Развёртывание | Vault/OpenBao в HA (Raft 3/5, auto-unseal), два audit device и алерты (§5), Kubernetes auth, применение политик из `deploy/vault/` CI-применителем, периодическая сверка расхождений с Git, отзыв root-токена, recovery-ключи ≥ 3 держателя | **Блокер shadow** (T-36 — P1) | п. 1 |
 | 3 | Загрузка секретов | Загрузить секреты intake в `aegis-kv/data/mvp-a/…` с response wrapping при передаче между людьми | **Блокер shadow** | п. 2 |
 | 4 | RT-18 (§6) | Прогнать после развёртывания, результат — в отчёт red-team | **Блокер shadow** | п. 2 |

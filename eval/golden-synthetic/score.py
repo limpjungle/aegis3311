@@ -222,6 +222,8 @@ def main():
     if args.ref_ids_only:
         ref_ids = {r["id"] for r in refs}
         cases = [c for c in cases if c["id"] in ref_ids]
+    if not cases:
+        ap.error("no cases to score (check --cases and --ref-ids-only)")
     rows = score(cases, load_jsonl(args.pred), refs)
     agg = aggregate(rows, args.by_variant)
     print_table(agg)

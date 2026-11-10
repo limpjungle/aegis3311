@@ -54,7 +54,7 @@
 | 2 | Прогнать `aegis-audit checkpoint`/`verify` на живом bucket'е: per-object заголовки lock без default retention, lock-заголовки в GET, формат XML `?versions`, `DELETE` версии → 403 | **Блокер shadow** | Bucket |
 | 2 | Алерты на `aegis_intake_audit_anchor_lag_seconds` и `aegis_intake_audit_anchor_errors_total` | Высокая | Bucket |
 | 4 | Развернуть Vault/OpenBao в HA (Raft, auto-unseal), два audit device и алерты, Kubernetes auth, применение политик из `deploy/vault/`, сверка расхождений с Git, recovery-ключи | **Блокер shadow** | Выбор Vault или OpenBao |
-| 4 | Проверить на dev-Vault и dev-OpenBao: под не стартует при отсутствующем пути в KV (не пустой файл); нужен ли агенту записываемый `/tmp` при `readOnlyRootFilesystem`; intake читает файлы `0400` при одинаковом `runAsUser` | Высокая | Dev-стенд |
+| 4 | ~~Проверить на dev-Vault и dev-OpenBao: отсутствующий путь в KV, `/tmp` агента, файлы `0400`~~ Сделано 10.11.2026: стенд [`deploy/vault/dev/`](../../deploy/vault/dev/) (minikube, `./run.sh openbao|vault`), обе реализации — 0 провалов; найдена и исправлена ошибка в `deploy/vault/agent/aegis-intake.json` (`method` должен быть списком), добавлен `num_retries: 3` | Решено | — |
 | 4 | Подставить реальные `vault.address` и `vault.ca_cert` в `deploy/vault/agent/aegis-intake.json` (сейчас условные) | Средняя | Развёртывание Vault |
 | 6 | Применить NetworkPolicy egress и проверить на стенде | Высокая | — |
 | 7 | Стенд kill switch: ConfigMap и RBAC, бакет `aegis3311-kill-switch` (Standard, версионирование, без Object Lock, отдельное облако/каталог), расписание renewer, `check` во внешнем мониторинге | Высокая | Ключи kill switch |
@@ -68,7 +68,7 @@
 | 4 | Загрузить секреты intake в Vault KV (`aegis-kv/data/mvp-a/…`) с response wrapping при передаче | **Блокер shadow** | Развёртывание Vault |
 | 2 | Ключ подписи цепочки аудита в KMS | **Блокер shadow** | Выбор KMS, подписант в коде |
 | 2 | Отдельная пара S3-ключей для выгрузки checkpoint'ов: `PutObject`, `GetObject(Version)`, `ListBucketVersions`, без Delete (`AEGIS_AUDIT_S3_*_FILE`) | **Блокер shadow** | Bucket |
-| 3 | Ключ подписи policy bundle офлайн → секрет environment `policy-signing`; ключи в `deploy/policy-bundle/keys.json` | **Блокер shadow** | Ревьюеры |
+| 3 | ~~Ключ подписи policy bundle офлайн → секрет environment `policy-signing`; ключи в `deploy/policy-bundle/keys.json`~~ Сделано 09.11.2026: секрет `POLICY_BUNDLE_SIGNING_KEY` создан (ключ перевыпущен: первый вариант приватного ключа попал в лог сессии), открытые ключи `ci-policy-signing.pub` и `break-glass.pub` в `deploy/policy-bundle/keys/`; break-glass зашифрован и разнесён на двух хранителей. В `main` вошли через [PR №1](https://github.com/limpjungle/aegis3311/pull/1) | Решено | — |
 | 7 | Ключи дежурных и двух renewer kill switch | Высокая | — |
 | 8 | Ключ и environment `release` | Высокая | п. 3 |
 
@@ -77,10 +77,10 @@
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
 | 3 | ~~Группы в `.github/four-eyes.json` и CODEOWNERS~~ Сделано 09.11.2026: `sre-leads` — `limpjungle`, `Oltix146`; `security` — `trix13371` | Решено | — |
-| 3 | Применить rulesets `main` и `tags` (environments `policy-signing`, `release` созданы 09.11.2026: ревьюеры `trix13371`, `Oltix146`, `prevent_self_review`) | **Блокер shadow** | Ключ и секрет `POLICY_BUNDLE_SIGNING_KEY` |
+| 3 | ~~Применить rulesets `main` и `tags`~~ Сделано 09.11.2026: `main: четыре глаза` (id 26882802) и `теги релизов и policy bundle` (id 26882804), `active`, без обхода; environments `policy-signing`, `release` — ревьюеры `trix13371`, `Oltix146`, `prevent_self_review` | Решено | — |
 | 3 | ~~Отключить merge-коммит и rebase~~ Сделано 09.11.2026: только squash | Решено | — |
 | 3 | ~~Круг write и immutable releases~~ Проверено 09.11.2026: write — `trix13371`, `Oltix146` (admin — `limpjungle`); immutable releases включены | Решено | — |
-| 3 | Genesis-bundle (`workflow_dispatch`, `genesis=true`) | **Блокер shadow** | Rulesets, ключ |
+| 3 | ~~Genesis-bundle (`workflow_dispatch`, `genesis=true`)~~ Сделано 10.11.2026: опубликованы [policy-bundle-1](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-1) и [policy-bundle-2](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-2) | Решено | — |
 | 3 | `policy_bundle.required: true` у intake | **Блокер shadow** | Genesis |
 | 2 | Секция `audit.anchor` в конфигурации intake на стенде | **Блокер shadow** | Bucket, ключи |
 | 8 | Первый прогон `release` на GitHub, сверить входы actions v7/v8 | Высокая | Environment `release` |
@@ -98,7 +98,7 @@
 
 ## Предлагаемый порядок
 
-1. CI и четыре глаза (п. 3 и п. 8): люди, ключ, настройки GitHub, genesis, `required: true`, RT-11.
+1. CI и четыре глаза (п. 3 и п. 8): подтвердить `required: true` на стенде, пройти RT-11 и проверить публикацию бинарного релиза.
 2. Аудит в KMS и WORM (п. 2): WORM в коде готов (09.11.2026); выбор KMS и подписант, срок хранения, bucket и ключи, прогон на живом bucket'е.
 3. Формальный red-team (п. 5) по готовым сценариям — после п. 2–3.
 4. Развёртывание Vault и RT-18 (п. 4): решение принято 09.11.2026, SPIRE — в MVP-B.

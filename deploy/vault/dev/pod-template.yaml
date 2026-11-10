@@ -1,0 +1,48 @@
+# Под по фрагменту intake-deploy.md («Секреты: Vault Agent»); вместо intake — busybox, читающий файлы секретов
+# под тем же runAsUser. Плейсхолдеры подставляет run.sh: __NAME__, __AGENT_IMAGE__, __CLI__.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __NAME__
+  namespace: aegis-system
+spec:
+  serviceAccountName: aegis-intake
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  initContainers:
+    - name: vault-agent
+      image: __AGENT_IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["__CLI__", "agent", "-config=/vault/config/aegis-intake.json"]
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+      volumeMounts:
+        - {name: vault-token, mountPath: /var/run/secrets/vault, readOnly: true}
+        - {name: vault-config, mountPath: /vault/config, readOnly: true}
+        - {name: secrets, mountPath: /vault/secrets}
+  containers:
+    - name: intake
+      image: busybox:1.37.0
+      imagePullPolicy: IfNotPresent
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          ls -ln /vault/secrets
+          for f in /vault/secrets/*; do
+            n=$(wc -c < "$f")
+            [ "$n" -gt 0 ] || { echo "ПУСТО: $f"; exit 1; }
+            echo "ok $f $n байт"
+          done
+          [ ! -e /var/run/secrets/vault ] && echo "ok: токена vault в контейнере intake нет"
+          [ ! -e /var/run/secrets/kubernetes.io ] && echo "ok: токена SA по умолчанию нет"
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+      volumeMounts:
+        - {name: secrets, mountPath: /vault/secrets, readOnly: true}
+  volumes:
+    - name: secrets
+      emptyDir: {medium: Memory}
+    - name: vault-token
+      projected:
+        sources: [{serviceAccountToken: {audience: vault, expirationSeconds: 600, path: token}}]
+    - {name: vault-config, configMap: {name: aegis-intake-vault-agent}}

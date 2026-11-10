@@ -1,0 +1,19 @@
+# Dev-режим Vault: in-memory, без TLS, root-токен "root". Только для стенда.
+global:
+  enabled: true
+injector:
+  enabled: false
+csi:
+  enabled: false
+ui:
+  enabled: false
+server:
+  image:
+    repository: hashicorp/vault
+    tag: "2.0.4"   # digest проверяет run.sh на хосте (sha256:5be49781ecf7…), в кластер образ загружается
+    pullPolicy: IfNotPresent
+  dev:
+    enabled: true
+    devRootToken: root
+  authDelegator:
+    enabled: true

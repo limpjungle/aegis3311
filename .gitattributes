@@ -1,0 +1,2 @@
+# Eval manifests and reference metadata hash the exact file bytes.
+eval/golden-synthetic/** text eol=lf

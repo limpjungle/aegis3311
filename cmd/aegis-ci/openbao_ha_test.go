@@ -22,7 +22,7 @@ var (
 	reTLSDisable  = regexp.MustCompile(`(?i)tls_disable\s*=\s*"?(1|t|true)"?\b`)
 	reTLSCert     = regexp.MustCompile(`tls_cert_file\s*=`)
 	reStorageRaft = regexp.MustCompile(`storage\s+"raft"`)
-	reAudit       = regexp.MustCompile(`\baudit\s+"[^"]+"\s+"([^"]+)"`)
+	reAudit       = regexp.MustCompile(`\baudit\s+"[^"]+"\s+"([^"]+)"\s*\{[^}]*?options\s*\{[^}]*?file_path\s*=\s*"([^"]+)"`)
 	reUnsafeAudit = regexp.MustCompile(`unsafe_allow_api_audit_creation\s*=\s*true`)
 	reSealBlock   = regexp.MustCompile(`(?m)^\s*seal\s+"`)
 	reRetryJoin   = regexp.MustCompile(`\bretry_join\s*\{`)
@@ -109,12 +109,12 @@ func checkHAValues(raw []byte, wantDigest string) error {
 	if !reTLSCert.MatchString(cfg) {
 		return errors.New("server.ha.raft.config: у listener нет tls_cert_file")
 	}
-	paths := map[string]bool{}
+	names, files := map[string]bool{}, map[string]bool{}
 	for _, a := range reAudit.FindAllStringSubmatch(cfg, -1) {
-		paths[a[1]] = true
+		names[a[1]], files[a[2]] = true, true
 	}
-	if len(paths) < 2 {
-		return fmt.Errorf("server.ha.raft.config: audit device с разными path: %d, нужно не меньше двух (§5: два audit device)", len(paths))
+	if len(names) < 2 || len(files) < 2 {
+		return fmt.Errorf("server.ha.raft.config: audit device с разными path: %d, с разными file_path: %d, нужно не меньше двух каждых (§5: два audit device)", len(names), len(files))
 	}
 	if reUnsafeAudit.MatchString(cfg) {
 		return errors.New("server.ha.raft.config: unsafe_allow_api_audit_creation = true (CVE-2025-54997)")
@@ -206,6 +206,9 @@ func TestOpenBaoHANegativeCases(t *testing.T) {
 		})},
 		{"два audit с одним path", "audit device", cfgMut(func(c string) string {
 			return strings.Replace(needs(c, `audit "file" "stdout"`), `audit "file" "stdout"`, `audit "file" "file"`, 1)
+		})},
+		{"два audit с разными именами, но одним file_path", "audit device", cfgMut(func(c string) string {
+			return strings.Replace(needs(c, `file_path = "stdout"`), `file_path = "stdout"`, `file_path = "/openbao/audit/audit.log"`, 1)
 		})},
 		{"replicas 2", "replicas", yamlMut(func(m map[string]any) { set(m, 2, "server", "ha", "replicas") })},
 		{"retry_join меньше replicas", "retry_join", yamlMut(func(m map[string]any) { set(m, 5, "server", "ha", "replicas") })},

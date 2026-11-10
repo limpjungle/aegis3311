@@ -9,6 +9,7 @@
 | `agent/aegis-intake.json` | Vault Agent для init-контейнера: `exit_after_auth`, шаблоны с правами `0400`, без sink, listener, api_proxy и cache |
 | `server/openbao-ha.yaml` | Боевые values чарта openbao/openbao 0.30.7: Raft 3, TLS, Shamir 3/2 (блока `seal` нет), два audit device в конфигурации, `OnDelete`, PDB `maxUnavailable: 1`, образ по digest. Проверяет `cmd/aegis-ci/openbao_ha_test.go` |
 | `dev/run-ha.sh` | HA-стенд: ставит эти values на minikube и проверяет init, unseal, рестарты и break-glass |
+| `policies/bg-init.json` | Политика токена-инициатора break-glass (`generate-root`, `rotate-keys`), без `delete`; не intake-политика, проверяется `TestBreakGlassInitiatorPolicy` |
 | `dev/lib.sh` | Общие функции стенда для `run.sh` и `run-ha.sh` |
 
 ## Dev-стенд
@@ -40,9 +41,10 @@ Dev-режим: in-memory, без TLS, root-токен `root`, секреты ф
 Процедуры (в бою, вводит человек-держатель; доля читается с запросом или из stdin, не из argv):
 
 - **Unseal узла:** две разные доли, `bao operator unseal` на каждом поде (через `kubectl exec -it` или `port-forward` и TLS с проверкой CA); после первой доли `progress 1/2`.
-- **Смена держателя:** `bao operator rekey` / `sys/rotate/root/*` (кворум 2 доли), новые доли шифруются PGP-ключами нового состава; старые доли перестают действовать.
+- **Смена держателя (rotate-keys):** `bao operator rotate-keys -init -key-shares=3 -key-threshold=2 -pgp-keys=<ключи нового состава>` токеном `bgi` (хранится зашифрованно у держателей, см. [§5](../../docs/02-security/identity-secrets-mvp-a.md#5-меры-по-vault-t-36)); затем двое текущих держателей по очереди вводят свои доли (`sys/rotate/root/update`, `key=-` через stdin); после второй доли выдаются 3 новые доли, зашифрованные PGP, старые перестают действовать. На стенде проверено: одна доля — progress 1/2 и не завершает, `bgi` отменить процедуру не может (403), вторая доля завершает. Незавершённая попытка пропадает при смене лидера.
 - **Обновление подов (`OnDelete`):** по одному, начиная со standby; после удаления пода дождаться sealed, ввести две доли, убедиться в `list-peers` (3 voter) и только затем следующий под; лидер — последним.
-- **Break-glass:** `generate-root` долями порога 2 токеном-инициатором (в 2.7.2 `sys/generate-root-token/*` требует токена); итоговый токен отзывается сразу после использования.
+- **Break-glass:** `bgi` запускает `bao operator generate-root -init`, двое держателей вводят доли (`sys/generate-root-token/update`, `key=-` через stdin), зашифрованный токен расшифровывается OTP (токен и OTP не передавать в argv); итоговый токен отзывается сразу после использования, в audit остаются записи `sys/generate-root-token`. `bgi` не может отменить начатую процедуру (нет `delete`).
+- **Потеря `bgi`** (истёк, утёк, утрачен): новый выдать нечем, пока не включены безтокенные эндпоинты. Процедура — в [§5](../../docs/02-security/identity-secrets-mvp-a.md#5-меры-по-vault-t-36) (PR с четырьмя глазами, временный `disable_unauthed_generate_root_endpoints = false`, рестарт с unseal, `generate-root`, новый `bgi`, возврат флага). Флаги `disable_unauthed_*` в боевых values не включать (CVE-2026-5807); тест `TestOpenBaoHANoUnauthedEndpoints` это проверяет. Адрес сервера для агента — сервис `openbao-active` (SAN сертификата должен его содержать), не основной `openbao`.
 
 ## Применение
 

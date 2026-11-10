@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -95,19 +97,93 @@ func TestVaultAgentAddressStaysConditional(t *testing.T) {
 	}
 }
 
-// Стендовые токены и политики не должны быть требованием боевых values и документов.
+// Стендовые токены и политики не должны быть требованием боевых values и документов; bg-init (токен-инициатор
+// break-glass) — боевой элемент, описанный в §5 и в policies/bg-init.json, но не в values, ролях и конфигурации агента.
 func TestStandOnlyTokensNotInProduction(t *testing.T) {
 	for _, f := range []string{"server/openbao-ha.yaml", "policies/aegis-intake.json", "roles/aegis-intake.json", "agent/aegis-intake.json"} {
 		s := string(readVault(t, f))
 		for _, w := range []string{"ops-dev", "bg-init"} {
 			if strings.Contains(s, w) {
-				t.Errorf("%s: упоминает стендовое %q", f, w)
+				t.Errorf("%s: упоминает %q", f, w)
 			}
 		}
 	}
 	docs, _ := os.ReadFile("../../docs/02-security/identity-secrets-mvp-a.md")
 	if strings.Contains(string(docs), "ops-dev") {
 		t.Error("identity-secrets-mvp-a.md: ops-dev — только для стенда")
+	}
+}
+
+const bgInitPolicy = "bg-init"
+
+// checkBGInit: токен-инициатор break-glass имеет ровно эти права и не больше — без delete (отмена чужой процедуры),
+// sudo, list и прочих путей.
+func checkBGInit(raw []byte) error {
+	var p struct {
+		Path map[string]struct {
+			Capabilities []string `json:"capabilities"`
+		} `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return err
+	}
+	want := map[string]string{
+		"sys/generate-root-token/attempt": "create,read,update",
+		"sys/generate-root-token/update":  "update",
+		"sys/rotate/root/init":            "create,read,update",
+		"sys/rotate/root/update":          "update",
+		"auth/token/lookup-self":          "read",
+		"auth/token/renew-self":           "update",
+	}
+	for path, r := range p.Path {
+		w, ok := want[path]
+		if !ok {
+			return fmt.Errorf("bg-init: лишний путь %q", path)
+		}
+		caps := append([]string(nil), r.Capabilities...)
+		sort.Strings(caps)
+		if got := strings.Join(caps, ","); got != w {
+			return fmt.Errorf("bg-init: %s capabilities %q, ожидается %q (delete отменял бы чужой break-glass)", path, got, w)
+		}
+	}
+	for path := range want {
+		if _, ok := p.Path[path]; !ok {
+			return fmt.Errorf("bg-init: нет пути %q", path)
+		}
+	}
+	return nil
+}
+
+func TestBreakGlassInitiatorPolicy(t *testing.T) {
+	raw := readVault(t, "policies/bg-init.json")
+	if err := checkBGInit(raw); err != nil {
+		t.Fatal(err)
+	}
+	mut := func(f func(path map[string]any)) []byte {
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		f(m["path"].(map[string]any))
+		out, _ := json.Marshal(m)
+		return out
+	}
+	for name, c := range map[string]struct {
+		want string
+		raw  []byte
+	}{
+		"delete на attempt": {"delete", mut(func(p map[string]any) {
+			p["sys/generate-root-token/attempt"] = map[string]any{"capabilities": []any{"create", "read", "update", "delete"}}
+		})},
+		"sudo на update": {"capabilities", mut(func(p map[string]any) {
+			p["sys/generate-root-token/update"] = map[string]any{"capabilities": []any{"update", "sudo"}}
+		})},
+		"лишний путь":    {"лишний путь", mut(func(p map[string]any) { p["sys/policy/*"] = map[string]any{"capabilities": []any{"read"}} })},
+		"нет renew-self": {"нет пути", mut(func(p map[string]any) { delete(p, "auth/token/renew-self") })},
+	} {
+		if err := checkBGInit(c.raw); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: ошибка %v, ожидалось %q", name, err, c.want)
+		}
 	}
 }
 

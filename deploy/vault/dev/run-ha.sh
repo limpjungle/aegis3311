@@ -35,7 +35,8 @@ fi
 
 work=$(mktemp -d)
 trap 'GNUPGHOME="$work/gnupg" gpgconf --kill gpg-agent 2>/dev/null || true; rm -rf "$work"' EXIT
-rm -rf "$state"; mkdir -p -m 700 "$state"; umask 077
+umask 077
+rm -rf "$state"; mkdir -p -m 700 "$state"; chmod 700 "${state%/*}"
 
 # --- обёртки над CLI внутри подов ---------------------------------------------------------------------------------
 # Токен ($tok) уходит первой строкой stdin и читается в env внутри пода, поэтому не попадает в argv.
@@ -255,12 +256,15 @@ srv_in policy write ops-dev - >/dev/null <<'EOF'
 path "sys/storage/raft/configuration" { capabilities = ["read"] }
 path "sys/audit" { capabilities = ["read", "sudo"] }
 EOF
-srv_in policy write bg-init - >/dev/null <<'EOF'
-path "sys/generate-root-token/attempt" { capabilities = ["create", "update", "read", "delete"] }
-path "sys/generate-root-token/update" { capabilities = ["update"] }
-EOF
-bgi=$(srv token create -orphan -policy=bg-init -ttl=3h -field=token)
+# Токен-инициатор break-glass (bgi): политика из Git, orphan, periodic 720h, без default-политики и explicit_max_ttl.
+srv_in policy write bg-init - < "$vault_dir/policies/bg-init.json" >/dev/null
+bgi=$(srv token create -orphan -period=720h -policy=bg-init -no-default-policy -field=token)
 ops=$(srv token create -orphan -policy=ops-dev -ttl=3h -field=token)
+# bgi: periodic 720h, одна политика bg-init (без default), без explicit_max_ttl и ограничения числа использований; продлевается сам.
+bgi_acc=$(tok=$bgi bao_pod 0 token lookup -format=json | jq -r '.data.accessor')
+li=$(tok=$bgi bao_pod 0 token lookup -format=json | jq -c '.data | {period, explicit_max_ttl, num_uses, orphan, policies}')
+[ "$li" = '{"period":2592000,"explicit_max_ttl":0,"num_uses":0,"orphan":true,"policies":["bg-init"]}' ] && pass "bgi: periodic 720h, explicit_max_ttl 0, orphan, политики только bg-init (без default)" || fail "bgi: lookup-self $li"
+tok=$bgi bao_pod 0 token renew -format=json | jq -e '.auth.renewable == true' >/dev/null && pass "bgi: renew-self работает без default-политики" || fail "bgi: renew-self не работает"
 jq --arg a "$addr" '.vault.address = $a' "$vault_dir/agent/aegis-intake.json" > "$work/agent.json"   # ca_cert остаётся из Git
 k -n aegis-system create configmap aegis-intake-vault-agent --from-file=aegis-intake.json="$work/agent.json" --dry-run=client -o yaml | k apply -f - >/dev/null
 
@@ -372,6 +376,16 @@ unseal_all "${others[@]}"
 secrets_ok "после восстановления кворума"
 hold_ok "потеря кворума"
 
+xor_decode() { # $1 — otp, $2 — encoded_token (base64 без padding): токен = encoded XOR otp; только bash и coreutils
+  local b64=$2 i out="" c; local -a bytes
+  while [ $(( ${#b64} % 4 )) -ne 0 ]; do b64+="="; done
+  mapfile -t bytes < <(printf %s "$b64" | base64 -d | od -An -v -tu1 -w1)
+  for i in "${!bytes[@]}"; do
+    printf -v c '%02x' $(( bytes[i] ^ $(printf '%d' "'${1:i:1}") ))
+    out+=$(printf "\\x$c")
+  done
+  printf %s "$out"
+}
 # 12. Break-glass: generate-root кворумом порог 2. В OpenBao 2.7.2 sys/generate-root-token/* требует токена (старый
 # безтокенный sys/generate-root/* отвечает 405), поэтому нужен заранее выданный токен-инициатор только с этим правом (bgi).
 lead=$(find_leader)
@@ -380,24 +394,41 @@ nonce=$(jq -r '.nonce' <<<"$gr"); otp=$(jq -r '.otp' <<<"$gr")
 upd() { { printf '%s\n' "$bgi"; printf %s "$1"; } | k -n "$ns" exec -i "openbao-$lead" -c openbao -- sh -c 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao write -format=json sys/generate-root-token/update key=- nonce="$1"' sh "$nonce"; }
 r=$(upd "${share[0]}" | jq -c '.data | {progress, required, complete}')
 if jq -e '.progress == 1 and .required == 2 and .complete == false' >/dev/null <<<"$r"; then pass "break-glass: одна доля — generate-root не завершён (progress 1/2)"; else fail "break-glass: после одной доли $r"; fi
+# У bgi нет delete: он не может отменить начатую процедуру (та же атака, что CVE-2026-5807); попытка продолжается второй долей.
+if out=$(tok=$bgi bao_pod "$lead" operator generate-root -cancel 2>&1); then fail "break-glass: bgi отменил чужую процедуру generate-root"; else grep -q '403' <<<"$out" && pass "break-glass: bgi не может отменить generate-root (403, нет delete)" || fail "break-glass: отмена bgi — не 403: $out"; fi
 enc=$(upd "${share[2]}" | jq -r 'if .data.complete then .data.encoded_token else "" end')
 if [ -n "$enc" ]; then
-  bg=$({ printf '%s\n' "$bgi"; printf %s "$enc"; } | k -n "$ns" exec -i "openbao-$lead" -c openbao -- sh -c 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao operator generate-root -decode=- -otp="$1"' sh "$otp")
-  pass "break-glass: вторая доля — токен выпущен, -decode -otp работает"
+  bg=$(xor_decode "$otp" "$enc")   # OTP и зашифрованный токен не уходят в argv, поэтому XOR на хосте
+  pass "break-glass: вторая доля — токен выпущен и расшифрован OTP"
   pl=$(tok=$bg bao_pod "$lead" policy list 2>&1 || true)
   grep -qw default <<<"$pl" && pass "break-glass: токен читает sys/policy" || fail "break-glass: токен не читает sys/policy"
   n=$(k -n "$ns" exec "openbao-$lead" -c openbao -- grep -c 'sys/generate-root-token' /openbao/audit/audit.log || true)
   [ "${n:-0}" -gt 0 ] && pass "break-glass: sys/generate-root-token в audit.log активного пода ($n записей)" || fail "break-glass: sys/generate-root-token нет в audit.log"
-  tok=$bg bao_pod "$lead" token revoke -self >/dev/null 2>&1 || true
-  if tok=$bg bao_pod "$lead" policy list >/dev/null 2>&1; then fail "break-glass токен не отозван"; else pass "break-glass токен отозван"; fi
 else
   fail "break-glass: вторая доля не завершила generate-root"
 fi
-unset bg enc otp nonce gr
+unset enc otp nonce gr
+
+# 12б. Смена ключей (rotate-keys, смена держателя) тем же bgi: одна доля не завершает, отмены у bgi нет, вторая завершает.
+ri=$(tok=$bgi bao_pod "$lead" operator rotate-keys -init -key-shares=3 -key-threshold=2 -format=json)
+rn=$(jq -r '.nonce' <<<"$ri")
+rupd() { { printf '%s\n' "$bgi"; printf %s "$1"; } | k -n "$ns" exec -i "openbao-$lead" -c openbao -- sh -c 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao write -format=json sys/rotate/root/update key=- nonce="$1"' sh "$rn"; }
+r=$(rupd "${share[0]}" | jq -c '.data | {progress, required, complete}')
+if jq -e '.progress == 1 and .required == 2 and .complete != true' >/dev/null <<<"$r"; then pass "rotate-keys: одна доля — смена ключей не завершена (progress 1/2)"; else fail "rotate-keys: после одной доли $r"; fi
+if out=$(tok=$bgi bao_pod "$lead" operator rotate-keys -cancel 2>&1); then fail "rotate-keys: bgi отменил процедуру"; else grep -q '403' <<<"$out" && pass "rotate-keys: bgi не может отменить процедуру (403, нет delete)" || fail "rotate-keys: отмена bgi — не 403: $out"; fi
+if rupd "${share[1]}" | jq -e '.data.complete == true and (.data.keys_base64 | length) == 3' >/dev/null; then pass "rotate-keys: вторая доля завершила смену, выданы 3 новые доли"; else fail "rotate-keys: вторая доля не завершила смену"; fi
+unset share rn ri
+find_leader >/dev/null && pass "после смены ключей кластер работает, лидер есть" || fail "после смены ключей лидера нет"
 
 # --- завершение -------------------------------------------------------------------------------------------------
 tok=$ops bao_pod "$lead" token revoke -self >/dev/null 2>&1 || true
-tok=$bgi bao_pod "$lead" token revoke -self >/dev/null 2>&1 || true
+# У bgi нет права revoke-self: отзывает его по accessor токен break-glass (так же — утёкший bgi), затем отзывается и сам этот токен.
+tok=$bg bao_pod "$lead" token revoke -accessor "$bgi_acc" >/dev/null 2>&1 || true
+tok=$bg bao_pod "$lead" token revoke -self >/dev/null 2>&1 || true
+if tok=$bg bao_pod "$lead" policy list >/dev/null 2>&1; then fail "break-glass токен не отозван"; else pass "break-glass токен отозван"; fi
+unset bg
+# Отозванный (или истёкший) bgi — 403: новый выдать нечем без восстановления (README, «Потеря bgi»).
+if out=$(tok=$bgi bao_pod "$lead" operator generate-root -init 2>&1); then fail "отозванный bgi ещё работает"; else grep -q '403' <<<"$out" && pass "отозванный bgi: generate-root -init — 403" || fail "отозванный bgi: не 403: $out"; fi
 k -n aegis-system delete pod intake-long --wait=false >/dev/null
 echo "== openbao-ha: провалов $fails"
 exit $((fails > 0))

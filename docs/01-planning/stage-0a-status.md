@@ -54,7 +54,7 @@
 | 2 | Прогнать `aegis-audit checkpoint`/`verify` на живом bucket'е: per-object заголовки lock без default retention, lock-заголовки в GET, формат XML `?versions`, `DELETE` версии → 403 | **Блокер shadow** | Bucket |
 | 2 | Алерты на `aegis_intake_audit_anchor_lag_seconds` и `aegis_intake_audit_anchor_errors_total` | Высокая | Bucket |
 | 4 | Развернуть Vault/OpenBao в HA (Raft, auto-unseal), два audit device и алерты, Kubernetes auth, применение политик из `deploy/vault/`, сверка расхождений с Git, recovery-ключи | **Блокер shadow** | Выбор Vault или OpenBao |
-| 4 | Проверить на dev-Vault и dev-OpenBao: под не стартует при отсутствующем пути в KV (не пустой файл); нужен ли агенту записываемый `/tmp` при `readOnlyRootFilesystem`; intake читает файлы `0400` при одинаковом `runAsUser` | Высокая | Dev-стенд |
+| 4 | ~~Проверить на dev-Vault и dev-OpenBao: отсутствующий путь в KV, `/tmp` агента, файлы `0400`~~ Сделано 10.11.2026: стенд [`deploy/vault/dev/`](../../deploy/vault/dev/) (minikube, `./run.sh openbao|vault`), обе реализации — 0 провалов; найдена и исправлена ошибка в `deploy/vault/agent/aegis-intake.json` (`method` должен быть списком), добавлен `num_retries: 3` | Решено | — |
 | 4 | Подставить реальные `vault.address` и `vault.ca_cert` в `deploy/vault/agent/aegis-intake.json` (сейчас условные) | Средняя | Развёртывание Vault |
 | 6 | Применить NetworkPolicy egress и проверить на стенде | Высокая | — |
 | 7 | Стенд kill switch: ConfigMap и RBAC, бакет `aegis3311-kill-switch` (Standard, версионирование, без Object Lock, отдельное облако/каталог), расписание renewer, `check` во внешнем мониторинге | Высокая | Ключи kill switch |

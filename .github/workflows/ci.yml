@@ -47,6 +47,12 @@ jobs:
         run: go build ./...
       - name: Тесты
         run: go test ./...
+      - name: Стенд netpol, синтаксис и классификатор curl
+        run: |
+          bash -n deploy/intake/dev/run-netpol.sh
+          bash -n deploy/intake/dev/curl-verdict.sh
+          bash -n deploy/intake/dev/curl-verdict-test.sh
+          bash deploy/intake/dev/curl-verdict-test.sh
 
   race:
     runs-on: ubuntu-latest

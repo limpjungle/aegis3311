@@ -8,6 +8,7 @@
 #   ./run-netpol.sh             поднять стенд и прогнать проверки (без интернета)
 #   ./run-netpol.sh internet    то же + реальный openrouter.ai (записи CoreDNS убираются; без интернета на хосте проверки SKIP)
 #   ./run-netpol.sh down        удалить профиль minikube и контейнеры-цели
+#   ./run-netpol.sh selftest    таблица самопроверки классификатора curl (curl-verdict.sh), без кластера
 # Запасной вариант, если Cilium не поднимается из загруженных образов: `minikube start --cni=cilium` (см. README).
 set -euo pipefail
 
@@ -21,10 +22,12 @@ fakes="netpol-fake-openrouter netpol-fake-s3 netpol-fake-evil"
 case "$mode" in
   ""|internet) ;;
   down) docker rm -f $fakes >/dev/null 2>&1 || true; minikube delete -p "$cluster"; rm -rf "$st"; exit 0 ;;
-  *) echo "использование: $0 [internet|down]" >&2; exit 2 ;;
+  selftest) exec bash "$here/curl-verdict-test.sh" ;;
+  *) echo "использование: $0 [internet|down|selftest]" >&2; exit 2 ;;
 esac
 
 source "$here/../../vault/dev/lib.sh"   # k, fails, pass, fail, skip, busybox, load_one, start_cluster_cilium, apply_netpols, wait_cilium_ready
+source "$here/curl-verdict.sh"   # curl_verdict, nonzero
 
 curl_img=curlimages/curl:8.17.0;                         curl_digest=sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40
 nginx_img=nginx:1.30.6-alpine;                           nginx_digest=sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
@@ -149,24 +152,19 @@ crl() { # $1 ns, $2 под, остальное — аргументы curl
   elif [[ $out =~ rc=([0-9]+)$ ]]; then crc=${BASH_REMATCH[1]}
   else crc=99; fi
 }
-nonzero() { ! [[ $1 =~ ^0*\.?0*$ ]]; }  # время curl отлично от нуля
-# $1 — ok | fail | tls_fail | dns_fail, $2 описание, остальное — аргументы crl.
-#   fail      — отказ при установленном TCP (не DNS и не L3-дроп);
-#   tls_fail  — TCP установлен, TLS не завершён (отказ на этапе ClientHello): иначе проверка SNI ничего не доказывает (DNS 6, connect 7, дроп 28);
+# $1 — ok | fail | tls_fail | dns_fail, $2 описание, остальное — аргументы crl. Вердикт — curl_verdict (curl-verdict.sh): код curl и этап соединения вместе.
+#   fail      — не-TLS на :443: curl 52/56 при установленном TCP;
+#   tls_fail  — TCP установлен, TLS не завершён и curl 35/56 (сброс после ClientHello); curl 28 при установленном TCP — неопределённо (провал прогона);
 #   dns_fail  — curl 6 (имя не резолвится).
 expect_curl() {
-  local want=$1 d=$2; shift 2
+  local want=$1 d=$2 v; shift 2
   crl "$@"
   local t="curl $crc, tcp=$ctc tls=$cta"
-  case "$crc:$want" in
-    99:*) fail "стенд: exec не выполнился: $d" ;;
-    0:ok) pass "$d ($t)" ;;
-    0:*) fail "$d: запрос прошёл ($t)" ;;
-    *:ok) fail "$d: curl завершился с кодом $crc" ;;
-    6:dns_fail) pass "$d ($t)" ;;
-    *:dns_fail) fail "$d: ожидался отказ DNS (curl 6), $t" ;;
-    *:tls_fail) if nonzero "$ctc" && ! nonzero "$cta"; then pass "$d ($t)"; else fail "$d: отказ не на TLS-этапе ($t; DNS/connect/timeout)"; fi ;;
-    *:fail) if nonzero "$ctc"; then pass "$d ($t)"; else fail "$d: отказ без установленного TCP ($t)"; fi ;;
+  v=$(curl_verdict "$want" "$crc" "$ctc" "$cta")
+  case ${v%% *} in
+    pass) pass "$d ($t)" ;;
+    inconclusive) fail "$d: НЕОПРЕДЕЛЁННО — ${v#* } ($t)" ;;
+    *) fail "$d: ${v#* } ($t)" ;;
   esac
 }
 # Пять вариантов TLS к одному IP: SNI заданного имени, чужой SNI, без SNI, не-TLS на 443. $1 ok|fail для всех сразу не годится — зовутся по одному.
@@ -225,7 +223,7 @@ expect_noconn "прямой IP_OR до DNS запрещён" aegis-system intake
 dns aegis-system intake openrouter.ai. | grep -q "$ip_or" && pass "DNS: openrouter.ai -> IP_OR" || fail "DNS: openrouter.ai не вернул IP_OR"
 dns aegis-system intake storage.yandexcloud.net. | grep -q "$ip_s3" && pass "DNS: storage.yandexcloud.net -> IP_S3" || fail "DNS: storage.yandexcloud.net не вернул IP_S3"
 # DNS-запросы выше обязательны: toFQDNs пускает IP только после резолва имени из пода (без них --resolve даст L3-дроп, curl 28/7, похожий на «отказ»).
-# serverNames: SNI сверяется в ClientHello. TCP-соединение с Envoy устанавливается всегда, отказ — сброс после ClientHello (curl 35 и др.): tls_fail требует tcp>0 и tls=0.
+# serverNames: SNI сверяется в ClientHello. TCP-соединение с Envoy устанавливается всегда, отказ — сброс после ClientHello: tls_fail требует curl 35/56, tcp>0 и tls=0; таймаут (28) — неопределённо.
 echo "== SNI"
 sni_curl ok "SNI openrouter.ai -> IP_OR проходит" aegis-system intake openrouter.ai "$ip_or"
 sni_curl tls_fail "SNI evil.example -> IP_OR (тот же IP, чужое имя) отклонён" aegis-system intake evil.example "$ip_or"

@@ -35,7 +35,7 @@
 - ingress: Prometheus → intake :9464 проходит, остальные порты и источники — нет;
 - контроль самого стенда: loopback `aegis-other:8080` и `intake:9464` после политик (kubectl exec и curl исправны); сбой `kubectl exec` (код 2) — это FAIL «стенд: exec не выполнился», а не «запрещено».
 
-Через Envoy TCP-соединение с адресом внешней цели устанавливается всегда, отказ по SNI приходит сбросом после ClientHello, поэтому SNI проверяется по таймингам curl: отказ засчитывается, только если TCP установлен (`time_connect > 0`), а TLS не завершён (`time_appconnect == 0`, curl 35/56); DNS-ошибка, connect refused и L3-дроп (6/7/28) не принимаются за отказ по SNI. Код curl попадает в PASS-сообщение.
+Через Envoy TCP-соединение с адресом внешней цели устанавливается всегда, отказ по SNI приходит сбросом после ClientHello, поэтому SNI проверяется по коду curl и этапу соединения вместе: отказ засчитывается, только если TCP установлен (`time_connect > 0`), TLS не завершён (`time_appconnect == 0`) **и** код curl 35/56; curl 28 при установленном TCP — неопределённо (провал прогона), DNS-ошибка, connect refused и L3-дроп (6/7/28) не принимаются за отказ по SNI; не-TLS на :443 — 52/56 при `tcp>0`. Самопроверка классификатора без стенда: `./run-netpol.sh selftest`. Код curl попадает в PASS-сообщение.
 
 Запасной вариант, если встроенный Envoy не заработает: `envoy.enabled=true` (образ `quay.io/cilium/cilium-envoy:v1.39.5-1792733054-8c73b2816bc8239e27f1fd53b271884688137459@sha256:547ab45f6092f681d9f54f3be9fa8fb1e705c9c5dc2df388efe3a52aa6965629`, `envoy.image.useDigest=false`, `envoy.image.pullPolicy=IfNotPresent`, `load_one` образа) либо `minikube start -p aegis-netpol-dev --cni=cilium`.
 

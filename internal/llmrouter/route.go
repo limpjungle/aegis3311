@@ -171,7 +171,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 			return r.partial(res, err)
 		}
 		// Canary: проверяются те же байты, что уходят в Post (Client.Call передаёт prep.Body на каждой попытке без изменений).
-		// Остановка, зафиксированная после selectEndpoint, ловится в Reserve перед каждой попыткой.
+		// Остановка, зафиксированная после selectEndpoint, ловится в Reserve перед каждой попыткой: до блокировки бюджета и после записи резерва (резерв освобождается).
 		// До резерва бюджета, чтобы заблокированный запрос не тратил счёт; не в Transport — там ошибка дала бы ретраи и endpoint_down.
 		if _, hit := r.o.Canary.Find(prep.Body); hit {
 			r.canaryBlocked.Add(1)
@@ -268,7 +268,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 				return res, nil
 			}
 			res.ErrorKind = "budget"
-			// Резерв не записан в store или параллельная остановка (пауза между ретраями, резерв после switched): не исчерпание счёта.
+			// Резерв не записан в store или параллельная остановка (пауза между ретраями, запись резерва, резерв после switched): не исчерпание счёта.
 			if d := bres.lastDenied(); d == denyStateStore || d == denyHalted {
 				res.ErrorKind = "stopped"
 			}

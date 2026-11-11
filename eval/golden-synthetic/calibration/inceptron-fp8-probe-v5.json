@@ -50,6 +50,22 @@
    "n_cases": 635,
    "run_id": "20261110T210642Z-fa7e",
    "verdict": "OK"
+  },
+  {
+   "after_freeze": false,
+   "file": "runs/inceptron-fp8/probe-20261111T210643Z-3cc1.jsonl",
+   "findings": [],
+   "finished_at": "2026-11-11T21:44:51Z",
+   "metrics": {
+    "admissible": 99.53,
+    "decision_agreement": 95.59,
+    "harmful": 0.0,
+    "root_cause_match": 99.53,
+    "truncated_share": 0.472
+   },
+   "n_cases": 635,
+   "run_id": "20261111T210643Z-3cc1",
+   "verdict": "OK"
   }
  ],
  "profile": "inceptron-fp8",
@@ -74,5 +90,5 @@
   "truncated_share": 0.157
  },
  "set_sha256": "a90137e4aa2c424a6018402e0f853e297900ed22f9e0d3d0c558b58a5f4e7bde",
- "updated_at": "2026-11-10T22:05:25Z"
+ "updated_at": "2026-11-11T21:55:40Z"
 }

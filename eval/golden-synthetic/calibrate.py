@@ -88,7 +88,7 @@ def find_reference(base, profile, set_sha):
 
 
 def eligible_runs(base, profile, ref_meta):
-    """Полные прогоны пробы с теми же набором, промптом, схемой, моделью и генерацией, что у эталона."""
+    """Подходящие прогоны в хронологическом порядке, по одной версии на run_id."""
     out = []
     for meta_path in sorted(glob.glob(os.path.join(base, "runs", profile, "*.jsonl.meta.json"))):
         meta = load_json(meta_path)
@@ -100,8 +100,11 @@ def eligible_runs(base, profile, ref_meta):
                 and not meta.get("integrity_bypassed"))
         if same:
             out.append((meta.get("finished_at") or meta.get("started_at") or "", meta_path[:-len(".meta.json")], meta))
-    out.sort()
-    return out
+    # После --resume старая копия может сохранить run_id и статус completed_with_errors.
+    by_id = {}
+    for run in sorted(out, key=lambda run: (run[2]["status"] == "completed", run[0]), reverse=True):
+        by_id.setdefault(run[2]["run_id"], run)
+    return sorted(by_id.values())
 
 
 def metrics_for(cases, pred_rows, ref_rows):
@@ -251,7 +254,6 @@ def cmd_update(base, profile, out):
         point["verdict"] = overall(findings)
         point["findings"] = [{"level": a, "metric": b, "detail": c} for a, b, c in findings]
         st["points"].append(point)
-        known.add(point["run_id"])
         verdict, last_findings, added = point["verdict"], findings, added + 1
     st["updated_at"] = now()
     write_json_atomic(state_path(base, profile, tag), st)

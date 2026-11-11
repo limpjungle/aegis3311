@@ -135,6 +135,18 @@ class TestPreFreeze(CalibTestCase):
         self.assertEqual([p["run_id"] for p in self.state()["points"]], [run_id])
         self.assertEqual(self.cmd("freeze", "--min-points", "2"), 2)
 
+    def test_completed_run_takes_priority_over_archived_incomplete_copy(self):
+        run_id = self.add_run(finished_at="2026-11-12T00:00:00Z")
+        archived = os.path.join(self.base, "runs", PROFILE, "archived.jsonl")
+        self.write_jsonl(archived, self.oracle[:-self.pp(8)],
+                         self.meta("run", run_id, status="completed_with_errors",
+                                   finished_at="2026-11-11T00:00:00Z"))
+
+        self.assertEqual(self.cmd("update"), 0, self.out)
+        point, = self.state()["points"]
+        self.assertEqual(point["run_id"], run_id)
+        self.assertEqual(point["metrics"]["decision_agreement"], 100.0)
+
 
 class TestFreeze(CalibTestCase):
     def test_min_points_must_be_positive(self):

@@ -37,7 +37,7 @@
 | 3 | ~~Найти ещё одного ревьюера~~ Сделано 09.11.2026: `limpjungle` и `Oltix146` — SRE-лиды, `trix13371` — security; два одобрения набираются при любом авторе. Остаётся: второй участник `security` — иначе PR от `trix13371` в пути с `require: security` не слить (средняя) | Решено | — |
 | 3 | Прогнать RT-11 вручную на живом репозитории | **Блокер shadow** | Включение четырёх глаз |
 | 4 | ~~Решение Security: развернуть SPIRE/Vault или сузить объём~~ Принято 09.11.2026: SPIRE в MVP-B, Vault/OpenBao в MVP-A | Решено | — |
-| 4 | Выбрать Vault или OpenBao (лицензия BSL 1.1 — legal; unseal: Yandex KMS у Vault, у OpenBao проверить) | Высокая, до развёртывания | — |
+| 4 | ~~Выбрать Vault или OpenBao~~ Выбран OpenBao (10.11.2026). Unseal: Raft 3, Shamir 3/2, HA-стенд проверен (решено 11.11.2026, на утверждении Security, `trix13371`; [identity-secrets-mvp-a.md §9](../02-security/identity-secrets-mvp-a.md#9-vault-или-openbao)) | Высокая, до развёртывания | — |
 | 4 | Токены Alertmanager и Prometheus: в коде необязательны, а шаблоны агента требуют оба секрета в KV — загружать всегда или сделать шаблоны условными | Средняя | — |
 | 5 | Формальный прогон red-team и отчёт (RT-05/RT-06 — от RAG, RT-11 — от п. 3, RT-18 — от развёртывания Vault) | **Блокер shadow** | п. 2–4 |
 | 7 | Провести учение G0 по kill switch | Высокая | Стенд (инфраструктура) |
@@ -53,7 +53,7 @@
 | 2 | Создать бакет `aegis3311-audit-worm` (Yandex Object Storage, Standard, версионирование, Object Lock без режима по умолчанию, без KMS-шифрования, отдельный каталог — [intake-deploy.md](../04-operations/intake-deploy.md#бакеты-в-yandex-object-storage-решение-09112026)); сначала тестовый бакет с `retention: 24h` | **Блокер shadow** | Срок хранения (для боевого) |
 | 2 | Прогнать `aegis-audit checkpoint`/`verify` на живом bucket'е: per-object заголовки lock без default retention, lock-заголовки в GET, формат XML `?versions`, `DELETE` версии → 403 | **Блокер shadow** | Bucket |
 | 2 | Алерты на `aegis_intake_audit_anchor_lag_seconds` и `aegis_intake_audit_anchor_errors_total` | Высокая | Bucket |
-| 4 | Развернуть Vault/OpenBao в HA (Raft, auto-unseal), два audit device и алерты, Kubernetes auth, применение политик из `deploy/vault/`, сверка расхождений с Git, recovery-ключи | **Блокер shadow** | Выбор Vault или OpenBao |
+| 4 | Развернуть OpenBao в HA (Raft 3, Shamir 3/2, HA-стенд проверен — [`deploy/vault/server/openbao-ha.yaml`](../../deploy/vault/server/openbao-ha.yaml)), два audit device и алерты, Kubernetes auth, применение политик из `deploy/vault/`, сверка расхождений с Git, церемония init с долями у держателей | **Блокер shadow** | Утверждение Security, PGP-ключи держателей, боевой кластер |
 | 4 | ~~Проверить на dev-Vault и dev-OpenBao: отсутствующий путь в KV, `/tmp` агента, файлы `0400`~~ Сделано 10.11.2026: стенд [`deploy/vault/dev/`](../../deploy/vault/dev/) (minikube, `./run.sh openbao|vault`), обе реализации — 0 провалов; найдена и исправлена ошибка в `deploy/vault/agent/aegis-intake.json` (`method` должен быть списком), добавлен `num_retries: 3` | Решено | — |
 | 4 | Подставить реальные `vault.address` и `vault.ca_cert` в `deploy/vault/agent/aegis-intake.json` (сейчас условные) | Средняя | Развёртывание Vault |
 | 6 | Применить NetworkPolicy egress и проверить на стенде | Высокая | — |
@@ -65,6 +65,7 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
+| 4 | PGP-ключи трёх держателей долей unseal (`limpjungle`, `Oltix146`, `trix13371`) и церемония init: доли и root шифруются этими ключами, хранение долей вне OpenBao | **Блокер развёртывания** | Утверждение Security |
 | 4 | Загрузить секреты intake в Vault KV (`aegis-kv/data/mvp-a/…`) с response wrapping при передаче | **Блокер shadow** | Развёртывание Vault |
 | 2 | Ключ подписи цепочки аудита в KMS | **Блокер shadow** | Выбор KMS, подписант в коде |
 | 2 | Отдельная пара S3-ключей для выгрузки checkpoint'ов: `PutObject`, `GetObject(Version)`, `ListBucketVersions`, без Delete (`AEGIS_AUDIT_S3_*_FILE`) | **Блокер shadow** | Bucket |

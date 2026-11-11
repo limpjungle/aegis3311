@@ -147,6 +147,10 @@ func TestConfigValidBoundaries(t *testing.T) {
 	for _, env := range []string{"staging", "prod-cloud-hybrid", "prod-baremetal"} {
 		m := miniConfig()
 		m["environment"] = env
+		if bundleRequiredEnvs[env] {
+			m["policy_bundle"] = okBundleSection()
+			pb(m)["required"] = true
+		}
 		if _, err := parse(t, m); err != nil {
 			t.Errorf("environment %s: %v", env, err)
 		}

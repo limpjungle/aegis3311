@@ -1,0 +1,84 @@
+# T-17: весь egress intake. Требуется Cilium с L7-прокси (enable-l7-proxy); без CRD `kubectl apply` падает, default-deny остаётся.
+# Порты — порты пода (после DNAT), не Service. Домен кластера — cluster.local; NodeLocal DNS требует отдельного правила 1.
+# toFQDNs работает по IP из ответов DNS (IP за Cloudflare общий), поэтому без rules.dns в правиле 1 Cilium не узнает IP.
+# serverNames (правила 6 и 7) фильтрует по SNI в ClientHello без терминации TLS: нужен L7-прокси (Envoy; в Yandex MK8s встроенный).
+# TLS без SNI, не-TLS и ECH с внешним SNI, не равным имени, отклоняются (сброс после ClientHello); с rules сочетать нельзя; Cilium >= 1.13.
+# Адреса сверены: OpenBao — namespace из vault.address агента (deploy/vault/agent/aegis-intake.json), метки пода — чарт openbao.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: aegis-intake-egress
+  namespace: aegis-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: aegis-intake
+  egress:
+    # 1. DNS только к kube-dns и только для нужных имён; остальное получает REFUSED.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchName: openrouter.ai
+              - matchName: storage.yandexcloud.net
+              - matchPattern: "*.*.svc.cluster.local"
+    # 2. OpenBao (init-контейнер агента); порт 8201 (Raft) не разрешается.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: vault
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+    # 3. Alertmanager.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: alertmanager
+      toPorts:
+        - ports:
+            - port: "9093"
+              protocol: TCP
+    # 4. Prometheus.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # 5. API-сервер (в том числе ConfigMap kill switch). Порт обязателен: в self-hosted entity включает весь узел (kubelet 10250).
+    #    Yandex MK8s — 443, self-hosted обычно 6443.
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443" # kube-api-port
+              protocol: TCP
+    # 6. OpenRouter (роутер в процессе intake).
+    - toFQDNs:
+        - matchName: openrouter.ai
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames:
+            - openrouter.ai
+    # 7. Yandex Object Storage: внешний канал kill switch и WORM-выгрузка аудита (path-style; virtual-hosted будет заблокирован).
+    - toFQDNs:
+        - matchName: storage.yandexcloud.net
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames:
+            - storage.yandexcloud.net

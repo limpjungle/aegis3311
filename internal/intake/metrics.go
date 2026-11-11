@@ -59,7 +59,7 @@ var (
 	metricKSReasons  = []string{"none", "global", "cluster", "no_confirmation"}
 	metricChannels   = []string{"configmap", "oob"}
 	metricStatuses   = []string{StatusOpen, StatusRecorded, StatusClosing, "other"}
-	metricHaltReason = []string{"none", "auth", "estimator", "audit_failed", "state_store", "state_lost", "chain_lost", "other"}
+	metricHaltReason = []string{"none", "auth", "estimator", "egress_canary", "audit_failed", "state_store", "state_lost", "chain_lost", "other"}
 )
 
 // NewMetrics создаёт набор метрик; now == nil → time.Now.
@@ -238,6 +238,8 @@ func (m *Metrics) Render() ([]byte, error) {
 	}
 	w.Gauge("aegis_intake_router_halted", "1 — роутер остановлен.", metricScalar(promtext.Bool(rs.Halted)))
 	w.Gauge("aegis_intake_router_halt_reason", "Причина остановки роутера (one-hot).", metricOneHot("reason", metricHaltReason, halt)...)
+	w.Gauge("aegis_intake_router_canary_markers", "Число canary-маркеров в проверке исходящих запросов к LLM; 0 — проверка выключена.", metricScalar(float64(rs.CanaryMarkers)))
+	w.Counter("aegis_intake_router_canary_blocked_total", "Запросы к LLM, заблокированные из-за canary-маркера, с момента старта.", metricScalar(float64(rs.CanaryBlocked)))
 	var seq uint64
 	if m.Chain != nil {
 		seq = m.Chain.Head().Seq

@@ -36,6 +36,13 @@ type Config struct {
 	Budgets      BudgetsConfig  `json:"budgets"`       // нули → llmrouter.DefaultBudgets()
 	Failover     FailoverConfig `json:"failover"`      // нули и "" → llmrouter.DefaultFailover()
 	InternalNets []string       `json:"internal_nets"` // CIDR; нет → masker.DefaultInternalNets()
+	// Canary — проверка исходящих запросов к LLM на canary-маркеры (data-classes.md §5.2). nil — выключена (предупреждение в логе).
+	Canary *CanaryConfig `json:"canary"`
+}
+
+// CanaryConfig — откуда читать маркеры.
+type CanaryConfig struct {
+	MarkersFile string `json:"markers_file"` // абсолютный путь; по маркеру в строке (llmrouter.LoadCanaryFile)
 }
 
 type AuditConfig struct {
@@ -178,6 +185,9 @@ func (c Config) Validate() error {
 		if p == "" {
 			return errors.New("конфигурация: пустой путь в audit.public_keys")
 		}
+	}
+	if c.Canary != nil && (c.Canary.MarkersFile == "" || !filepath.IsAbs(c.Canary.MarkersFile)) {
+		return errors.New("конфигурация: canary.markers_file должен быть абсолютным путём")
 	}
 	if c.Audit.Anchor != nil {
 		return c.Audit.Anchor.Validate()

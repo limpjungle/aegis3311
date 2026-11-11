@@ -97,6 +97,14 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 	if err != nil {
 		return nil, &ConfigError{err}
 	}
+	var cs *llmrouter.CanarySet
+	if cfg.Canary != nil {
+		if cs, err = llmrouter.LoadCanaryFile(cfg.Canary.MarkersFile); err != nil {
+			return nil, &ConfigError{fmt.Errorf("canary.markers_file: %w", err)}
+		}
+	} else {
+		log.Warn("egress_canary_disabled", "hint", "исходящие запросы к LLM не проверяются на canary-маркеры (data-classes.md §5.2)")
+	}
 	cl, err := openrouter.NewClient(&a.Config, sec.APIKey, tr, d.ClientOptions...)
 	if err != nil {
 		return nil, err
@@ -155,7 +163,7 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 		st = d.WrapStore(st)
 	}
 	r, err := llmrouter.New(llmrouter.Options{Assets: a, Client: cl, Masker: m, Events: w, Clock: clock,
-		Budgets: budgets, Failover: fo, RouterID: cfg.RouterID, State: st})
+		Budgets: budgets, Failover: fo, RouterID: cfg.RouterID, State: st, Canary: cs})
 	if err != nil {
 		fs.Close()
 		w.Close()
@@ -169,7 +177,7 @@ func Open(cfg Config, sec Secrets, o OpenOptions, d Deps) (*Runtime, error) {
 	log.Info("llmrouter_opened", "router_id", cfg.RouterID, "chain_id", cfg.Audit.ChainID, "state_path", cfg.StatePath,
 		"chain", cfg.Audit.Chain, "masker_version", rt.MaskerVersion, "assets_config_sha256", a.ConfigSHA256,
 		"primary", a.Primary.Name, "fallback", a.Fallback.Name, "incident_tokens", budgets.IncidentTokens, "service_day_tokens", budgets.ServiceDayTokens,
-		"fail_threshold", fo.FailThreshold, "hysteresis", fo.Hysteresis.String(), "health_interval", fo.HealthInterval.String(),
+		"canary_markers", cs.Len(), "fail_threshold", fo.FailThreshold, "hysteresis", fo.Hysteresis.String(), "health_interval", fo.HealthInterval.String(),
 		"chain_seq", w.Head().Seq, "active", s.Active, "halted", s.Halted, "halt_reason", s.HaltReason)
 	if s.Halted {
 		log.Warn("llmrouter_halted", "halt_reason", s.HaltReason,

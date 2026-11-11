@@ -137,17 +137,7 @@ spec:
   podMetricsEndpoints: [{port: metrics, path: /metrics, interval: 15s}]
 ```
 
-(порт пода `metrics: 9464` объявите в Deployment). NetworkPolicy — скрейп только из Prometheus:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata: {name: aegis-intake-metrics, namespace: aegis-system}
-spec:
-  podSelector: {matchLabels: {app: aegis-intake}}
-  policyTypes: [Ingress]
-  ingress: [{from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}, podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}}], ports: [{port: 9464, protocol: TCP}]}]
-```
+(порт пода `metrics: 9464` объявите в Deployment). NetworkPolicy `aegis-intake-metrics` (скрейп только из Prometheus) — в [`deploy/intake/networkpolicy.yaml`](../../deploy/intake/networkpolicy.yaml).
 
 *Алерты.* Правило расхождения требует обоих рядов в одном Prometheus (федерация `/federate` с `match[]` или прямой скрейп); `cluster` у check и intake совпадает (`kill_switch.cluster`).
 
@@ -184,6 +174,13 @@ groups:
   - alert: IntakeRouterHalted
     expr: aegis_intake_router_halted == 1
     for: 5m
+  - alert: IntakeEgressCanaryDetected   # инцидент безопасности: маскировщик пропустил canary
+    expr: increase(aegis_intake_router_canary_blocked_total[10m]) > 0 or aegis_intake_router_halt_reason{reason="egress_canary"} == 1
+    labels: {severity: critical}
+  - alert: IntakeEgressCanaryDisabled   # только staging, где подбрасываются маркеры
+    expr: aegis_intake_router_canary_markers == 0
+    for: 30m
+    labels: {severity: warning}
 ```
 
 `IntakeKillSwitchDisagree`: каналы показывают «работаем», а intake остановлен — `W` новее подтверждения (после bootstrap или стёртого stop), у intake нет доступа к каналам (RBAC или egress: `aegis_intake_killswitch_channel_ok == 0`), либо уехали его часы. Алерт Alertmanager `Watchdog` (всегда горящий) направьте во внешний heartbeat (например, сервис dead man's switch): если цепочка Alertmanager сломана, intake не получит инцидентов, и сигналом остановки это не считается. Журнал: `kill_switch_channel_regressed` (`older_document` или `stop_removed`) — запись в канал не из процесса публикации, разбор как инцидент безопасности; `kill_switch_bootstrap` — ожидание release.
@@ -403,11 +400,56 @@ spec:
 Дополнительно:
 
 - У init-контейнера и intake одинаковый `runAsUser`: иначе файлы `0400` не читаются (проверить на стенде).
-- NetworkPolicy: egress к Vault (порт 8200) разрешён только поду `aegis-intake`; ingress в Vault — только от подов агентов и CI-применителя.
+- NetworkPolicy: egress к OpenBao (8200) — правило в [`deploy/intake/cilium-egress.yaml`](../../deploy/intake/cilium-egress.yaml); ingress в OpenBao — сделано, [`deploy/vault/network/`](../../deploy/vault/network/), см. [README](../../deploy/vault/README.md).
 - Политика, роль и конфигурация агента лежат в [`deploy/vault/`](../../deploy/vault/); меняются только через PR с четырьмя глазами.
 - Секреты читаются при старте пода. Ротация — rolling restart; автоматической ротации нет (цена отсутствия живого токена).
 - Vault недоступен или секрет не найден: init-контейнер завершается с ошибкой, под не стартует (fail-closed). Для kill switch это допустимо: intake без состояния не работает.
 - OpenBao sealed (после рестарта узлов Shamir требует ввода долей кворумом 2 из 3, [identity-secrets-mvp-a.md §9](../02-security/identity-secrets-mvp-a.md#9-vault-или-openbao)): новые поды intake не стартуют до unseal (init-контейнер повторяет вход с backoff, под остаётся в Pending), уже работающие продолжают — секреты у них в tmpfs. Поэтому для Deployment intake `strategy.rollingUpdate.maxUnavailable: 0`: старый под не убирается, пока новый не стал Ready. Проверено на стенде [`deploy/vault/dev/run-ha.sh`](../../deploy/vault/dev/run-ha.sh).
+
+## Сеть: NetworkPolicy и Cilium *(T-17)*
+
+Манифесты — [`deploy/intake/`](../../deploy/intake/) (каталог защищён четырьмя глазами); применяет их CI-применитель после PR, до применения обязателен `kubectl apply --dry-run=server`. Порядок: сначала `cilium-egress.yaml`, затем `networkpolicy.yaml`.
+
+**CNI — Cilium (решение 11.11.2026).** Egress по именам (`toFQDNs`) работает только через DNS-прокси Cilium, SNI-фильтр (`serverNames`) — через L7-прокси (Envoy). Без Cilium `CiliumNetworkPolicy` не применится (нет CRD), а default-deny останется: intake без egress не стартует (fail-closed).
+
+*Создание кластера Yandex MK8s.* Cilium выбирается только при создании кластера (режим tunnel/VXLAN; сервисному аккаунту кластера нужна роль `k8s.tunnelClusters.agent`); Cilium заменяет kube-proxy, Hubble встроен. Требования к кластеру одним списком:
+
+- **версия Cilium ≥ 1.13** (поле `serverNames` появилось в 1.13; в 1.12 его нет). Документация Yandex версию не называет (в примере вывода — образы 1.12.9), поэтому это блокирующая проверка: `kubectl -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}'` и `kubectl explain ciliumnetworkpolicy.spec.egress.toPorts.serverNames`. Если поля нет, `kubectl apply --dry-run=server` отклонит `aegis-intake-egress` (fail-closed), и кластер не годится;
+- `cilium-dbg status`: `Proxy Status: OK`; Envoy — встроенный (embedded) режим достаточен;
+- домен кластера `cluster.local`; NodeLocal DNS **не устанавливать** (с Cilium он ставится через `CiliumLocalRedirectPolicy`; если он всё же нужен, в DNS-правило обеих CNP добавляется второй селектор — поды `kube-system/k8s-app: node-local-dns`);
+- не менее 3 узлов; Hubble включён; порт API-сервера 443.
+
+Default-deny (`aegis-system-default-deny`) закрывает ingress и egress всего namespace `aegis-system`. Весь egress intake описан одной `CiliumNetworkPolicy` `aegis-intake-egress`; ни одного egress-правила в стандартной NetworkPolicy нет намеренно: L4-разрешение kube-dns:53 из другой политики сложилось бы (union) с L7-правилом DNS и сняло бы фильтр имён.
+
+| Куда | Порт | Механизм (столбец SNI — у правил toFQDNs) | Кто в коде ходит |
+|---|---|---|---|
+| kube-dns | 53 (UDP/TCP) | `toEndpoints` + L7 `rules.dns` | все |
+| OpenBao (`app.kubernetes.io/name: openbao`, `component: server`, namespace из `vault.address` агента) | 8200 | `toEndpoints` | init-контейнер Vault Agent (политика действует на весь под) |
+| Alertmanager | 9093 | `toEndpoints` | `internal/intake/httpget` |
+| Prometheus | 9090 | `toEndpoints` | `internal/intake/httpget` |
+| API-сервер Kubernetes | 443 (self-hosted часто 6443) | `toEntities: kube-apiserver` | `internal/intake/httpget` (список подов, ConfigMap kill switch) |
+| `openrouter.ai` | 443 | `toFQDNs.matchName` + `serverNames: [openrouter.ai]` | `internal/openrouter` (роутер в процессе intake) |
+| `storage.yandexcloud.net` | 443 | `toFQDNs.matchName` + `serverNames: [storage.yandexcloud.net]` | `internal/killswitch/s3` (внешний канал kill switch и WORM-выгрузка аудита, `internal/audit/worm`) |
+
+- **DNS-allowlist.** Intake может спросить у kube-dns только `openrouter.ai`, `storage.yandexcloud.net` и `*.*.svc.cluster.local`; остальное получает `REFUSED` (защита от DNS-туннеля и от резолва чужих имён). Домен кластера должен быть `cluster.local`; NodeLocal DNS не ставится (трафик пошёл бы на адрес NodeLocal, а не на kube-dns). Тест запрещает шаблоны `*` и `**.`.
+- **Прокси не используется.** `HTTPS_PROXY`/`NO_PROXY` не задаются: `ProxyFromEnvironment` в клиенте OpenRouter без переменной даёт прямое соединение, остальные клиенты с `Proxy: nil`.
+- **S3: `path_style: true` обязателен.** Разрешено одно имя `storage.yandexcloud.net`; virtual-hosted адресация (`<bucket>.storage.yandexcloud.net`) будет заблокирована (fail-closed; по SNI — тоже: `bucket.storage.yandexcloud.net` не равно `serverNames`).
+- **SNI (`serverNames`).** `toFQDNs` действует по IP из DNS, а `openrouter.ai` стоит за Cloudflare: тот же IP обслуживает другие сайты. Поэтому в правилах 6 и 7 задан `serverNames` с тем же именем: Cilium читает SNI из ClientHello без терминации TLS (L7-прокси Envoy) и пропускает TLS только с SNI `openrouter.ai` или `storage.yandexcloud.net` на IP из DNS. TLS без SNI, не-TLS на 443 и ECH с внешним SNI, не равным имени, отклоняются: TCP-соединение с прокси устанавливается всегда, отказ — сброс после ClientHello. SNI не аутентифицирован: это защита от ошибок и простой утечки, а не от RCE (domain fronting, собственный ключ). Go-клиенты шлют SNI по host URL (`internal/openrouter`: `openrouter.ai`; `internal/killswitch/s3` при `path_style: true`: `storage.yandexcloud.net`), `EncryptedClientHelloConfigList` не задан. DNS-прокси живёт в cilium-agent: при его перезапуске DNS intake на узле кратковременно не проходит (ловят `aegis_intake_killswitch_channel_ok`, `aegis_intake_audit_anchor_errors_total`).
+- **Замена canary-сканирования прокси.** Egress-прокси с поиском маркеров в трафике не используется (MITM-терминация TLS не вводится): тело запроса к LLM проверяет роутер перед отправкой, см. «Canary-маркеры» ниже.
+- **Подстраховка.** Go-резолвер после `REFUSED` идёт по search-списку; в Deployment intake задайте `dnsConfig.options: [{name: ndots, value: "1"}]` и используйте полные имена.
+- **Порты — порты пода** (после DNAT), не Service. Порт API-сервера у Yandex 443, у self-hosted 6443; правится в `cilium-egress.yaml` по маркеру `# kube-api-port`.
+
+Проверено на стенде [`deploy/intake/dev/run-netpol.sh`](../../deploy/intake/dev/run-netpol.sh) (Cilium 1.20.4, встроенный Envoy), 11.11.2026: 54 PASS, 0 провалов без интернета; SNI-проверки (`openrouter.ai` на IP OpenRouter проходит; чужой SNI на том же IP, TLS без SNI и `openrouter.ai` на IP S3 отклонены на TLS-этапе: curl 35, `tcp>0`, `tls=0`; не-TLS на :443 — curl 56 при установленном TCP) — в этом прогоне. Критерий отказа — код curl и этап соединения вместе (28 — неопределённо): DNS-ошибка, connect refused и L3-дроп (6/7/28) отказом на TLS-этапе не считаются; прогон после этого изменения проверки — 11.11.2026, 54 PASS, 0 провалов. Режим `internet`: 0 провалов, 2 SKIP (из узла minikube нет выхода в интернет — реальный openrouter.ai не проверен). Ingress в OpenBao — стенд `deploy/vault/dev/run-ha.sh cilium`: 61 PASS, 0 провалов, 0 SKIP.
+
+### Canary-маркеры: проверка исходящих запросов к LLM *(data-classes.md §5.2)*
+
+Замена сканирования трафика на egress-прокси: `llmrouter.Route` сравнивает итоговое тело запроса (те же байты, что уходят в POST) с маркерами из файла, после `AssertRequestSafe` и до резерва бюджета. Совпадение без учёта регистра ASCII — запрос не отправляется (`not_sent/egress_canary`, L1), роутер останавливается (`router_halted/egress_canary`) до `Resume`, растёт `aegis_intake_router_canary_blocked_total`, горит `IntakeEgressCanaryDetected`. Разбор — [degraded-mode.md](degraded-mode.md).
+
+В конфигурации роутера: `"canary": {"markers_file": "/etc/aegis/canary/markers.txt"}`. Файл — ConfigMap `aegis-canary-markers`, смонтированный read-only; по маркеру в строке, `#` и пустые строки пропускаются; маркер — 12–128 символов из `[A-Za-z0-9@._+-]` (их pyjson не экранирует), не более 256 маркеров, файл до 64 KiB, дубли без учёта регистра и пустой файл — ошибка старта. Без блока `canary` проверка выключена: в журнале `egress_canary_disabled`, метрика `aegis_intake_router_canary_markers 0` (в проде алерт `IntakeEgressCanaryDisabled`; допустимо только там, где маркеры не подбрасываются).
+
+Включение двухфазное ([migrations.md](migrations.md), «Порядок обновления» п. 9, «Откат»): сначала бинарь без блока `canary`, затем фиксация rollback floor и `aegis-audit` с `chain_format 4` везде, только после этого `canary.markers_file`. После первой записи `egress_canary` откат бинаря ниже floor невозможен; canary снимают удалением блока `canary`, не откатом образа. Старый `aegis-audit` (< 4) не проверит цепочку и с `-integrity-only`.
+
+Границы: проверка слабее прокси там, где важна независимость от процесса (компрометация процесса intake, путь мимо `Route`), — та же зона доверия; сильнее прокси тем, что нет MITM. Усиление: `toFQDNs` + SNI (выше), потоки Hubble `intake → world:443` с алертом на объём относительно `sent`-записей, сверка расхода ключа OpenRouter.
 
 ## Проверка перед shadow
 
@@ -415,3 +457,15 @@ spec:
 2. `aegis-intake replay -config FILE -in snapshot.json -prepare-only` — красные команды RT-01/02/04 без живых источников.
 3. ~~Подтверждение п. 1–9 раздела «Допущения» владельцами окружения~~ — подтверждено 08.11.2026; остаётся убедиться по выводу `collect` (п. 1), что фактические имена метрик и меток совпадают с конфигурацией.
 4. `aegis-audit verify` после первых записей: блок `intake` читается новыми версиями; старые `aegis-audit` записи с этим блоком не прочтут — обновить все копии.
+5. В боевом кластере версия Cilium ≥ 1.13 (см. «Создание кластера»), политики из `deploy/intake/` и `deploy/vault/network/` применены; из пода intake проверены разрешённые и запрещённые направления, `cilium-dbg status` показывает рабочий прокси (`Proxy Status: OK`), SNI-проверка по процедуре:
+
+   ```
+   # из пода intake (или ephemeral debug-контейнера в нём: та же политика)
+   getent hosts openrouter.ai            # IP_OR; DNS-запрос обязателен: без него toFQDNs не пустит IP (дроп, curl 28 — ложный «отказ»)
+   curl -sk -o /dev/null --connect-timeout 3 --max-time 6 \
+     -w 'rc=%{exitcode} tcp=%{time_connect} tls=%{time_appconnect}\n' \
+     --resolve evil.example:443:<IP_OR> https://evil.example/
+   # ожидается: rc=35 (или 56), tcp>0, tls=0 — сброс после ClientHello. rc=6/7/28 или tcp=0 — проверка ничего не доказала.
+   # контроль: то же с openrouter.ai (--resolve openrouter.ai:443:<IP_OR> https://openrouter.ai/) — tls>0.
+   ```
+6. Канарейка: маркеры посажены в staging, `canary.markers_file` задан, метрика `aegis_intake_router_canary_markers` > 0; rollback floor зафиксирован, `aegis-audit version` везде показывает `chain_format 4`.

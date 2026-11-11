@@ -43,7 +43,7 @@ func TestKillSwitchEventValidateBootstrap(t *testing.T) {
 }
 
 func TestFormatConstants(t *testing.T) {
-	if ChainFormat != 3 {
+	if ChainFormat != 4 {
 		t.Errorf("ChainFormat = %d", ChainFormat)
 	}
 	ks := KnownSchemas()
@@ -109,7 +109,7 @@ func TestVerifyNewerFormatStrict(t *testing.T) {
 	if !errors.As(err, &ce) || ce.Line != 2 || ce.Seq != 2 {
 		t.Fatalf("ChainError: %+v", ce)
 	}
-	for _, want := range []string{`aegisops/foo/v1`, "aegis-audit", "-integrity-only", "3"} {
+	for _, want := range []string{`aegisops/foo/v1`, "aegis-audit", "-integrity-only", "формат цепочки 4"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("в тексте %q нет %q", err, want)
 		}

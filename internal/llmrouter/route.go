@@ -14,11 +14,11 @@ type Result struct {
 	Mode    Mode
 	Outcome string // "sent" | "not_sent"
 	// Reason при not_sent: mode_off | required_excluded | context_ceiling | budget_incident | budget_service_day |
-	// unavailable | halted | canceled. halted — в том числе остановка из-за хранилища состояния (state_store).
+	// unavailable | halted | egress_canary | canceled. halted — в том числе остановка из-за хранилища состояния (state_store).
 	Reason    string
-	DegradeL1 bool                   // true при unavailable, halted, budget_*
+	DegradeL1 bool                   // true при unavailable, halted, egress_canary, budget_*
 	Role      Role                   // endpoint, на который ушёл (или готовился) запрос; "" без Prepared
-	Prepared  *Prepared              // nil при mode_off, unavailable, halted
+	Prepared  *Prepared              // nil при mode_off, unavailable, halted до подготовки
 	Call      *openrouter.CallResult // последний вызов endpoint'а, которому атрибутирована запись; nil при not_sent
 	// Накоплено по всем endpoint'ам одного Route: попытки, учтённый расход, признак переключения endpoint'а.
 	Attempts int
@@ -36,7 +36,7 @@ type Result struct {
 func (res *Result) notSent(reason string) {
 	res.Outcome, res.Reason = "not_sent", reason
 	switch reason {
-	case "unavailable", "halted", "budget_incident", "budget_service_day":
+	case "unavailable", "halted", "egress_canary", "budget_incident", "budget_service_day":
 		res.DegradeL1 = true
 	}
 }
@@ -170,8 +170,22 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		if err := openrouter.AssertRequestSafe(prep.Body, cfg, prep.Profile); err != nil {
 			return r.partial(res, err)
 		}
+		// Canary: проверяются те же байты, что уходят в Post (Client.Call передаёт prep.Body на каждой попытке без изменений).
+		// Остановка, зафиксированная после selectEndpoint, ловится в Reserve перед каждой попыткой: до блокировки бюджета и после записи резерва (резерв освобождается).
+		// До резерва бюджета, чтобы заблокированный запрос не тратил счёт; не в Transport — там ошибка дала бы ретраи и endpoint_down.
+		if _, hit := r.o.Canary.Find(prep.Body); hit {
+			r.canaryBlocked.Add(1)
+			herr := softStore(r.haltCanary())
+			if res.Attempts > 0 { // после переключения: запрос уже уходил на прежний endpoint
+				res.Outcome, res.ErrorKind = "sent", "stopped"
+				return res, herr
+			}
+			res.notSent("egress_canary")
+			return res, herr
+		}
 		ep := r.eps[role]
 		bres := r.bud.forIncident(req.IncidentID, req.Service, r.o.Clock.Now)
+		bres.gate = r.haltedNow
 		est := int64(prep.EstInputTokens + prep.MaxTokens)
 		reservation := openrouter.Reservation{Tokens: est, USD: openrouter.CostOf(float64(prep.EstInputTokens), float64(prep.MaxTokens), prep.Profile.Prices),
 			Prices: prep.Profile.Prices}
@@ -247,12 +261,15 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 					reason = denyIncident
 				case denyStateStore:
 					reason = "halted" // резерв не записан в store; роутер остановлен (state_store)
+				case denyHalted:
+					reason = "halted" // параллельная остановка до первой попытки
 				}
 				res.notSent(reason)
 				return res, nil
 			}
 			res.ErrorKind = "budget"
-			if bres.lastDenied() == denyStateStore { // резерв не записан в store: не исчерпание счёта
+			// Резерв не записан в store или параллельная остановка (пауза между ретраями, запись резерва, резерв после switched): не исчерпание счёта.
+			if d := bres.lastDenied(); d == denyStateStore || d == denyHalted {
 				res.ErrorKind = "stopped"
 			}
 		case openrouter.CallStopped:

@@ -78,7 +78,7 @@ func TestCLINewerFormat(t *testing.T) {
 		ChainFormat int      `json:"chain_format"`
 		Schemas     []string `json:"schemas"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &ver); err != nil || ver.ChainFormat != 3 || len(ver.Schemas) != 3 {
+	if err := json.Unmarshal(out.Bytes(), &ver); err != nil || ver.ChainFormat != 4 || len(ver.Schemas) != 3 {
 		t.Fatalf("version: %v %s", err, out.String())
 	}
 	if c := code(run([]string{"version", "-integrity-only"}, nil, &out)); c != 2 {
@@ -119,7 +119,7 @@ func TestCLINewerFormat(t *testing.T) {
 		Unverified int      `json:"unverified_records"`
 		Schemas    []string `json:"unverified_schemas"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.Seq != 3 || res.Records != 2 || res.Format != 3 || res.Unverified != 1 ||
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.Seq != 3 || res.Records != 2 || res.Format != 4 || res.Unverified != 1 ||
 		len(res.Schemas) != 1 || res.Schemas[0] != "aegisops/foo/v1" {
 		t.Fatalf("verify -integrity-only: %v %s", err, out.String())
 	}

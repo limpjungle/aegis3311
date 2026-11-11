@@ -6,6 +6,8 @@ kind: Pod
 metadata:
   name: __NAME__
   namespace: aegis-system
+  labels:
+    app: aegis-intake   # метка нужна для сетевых политик (режим cilium в run-ha.sh)
 spec:
   serviceAccountName: aegis-intake
   automountServiceAccountToken: false

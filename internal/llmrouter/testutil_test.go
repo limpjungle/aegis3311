@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,6 +178,8 @@ type rig struct {
 	sink   *memSink
 	clock  *fakeClock
 	st     *routerstate.MemStore
+	// onSleep вызывается из паузы между ретраями клиента (если задан).
+	onSleep atomic.Pointer[func()]
 }
 
 func newRig(t testing.TB, m dataclass.Masker, tr openrouter.Transport, url string, sink EventSink) *rig {
@@ -186,7 +189,13 @@ func newRig(t testing.TB, m dataclass.Masker, tr openrouter.Transport, url strin
 
 func newRigAssets(t testing.TB, a *openrouter.Assets, m dataclass.Masker, tr openrouter.Transport, url string, sink EventSink) *rig {
 	t.Helper()
-	opts := []openrouter.ClientOption{openrouter.WithSleep(func(context.Context, time.Duration) error { return nil })}
+	rg := &rig{}
+	opts := []openrouter.ClientOption{openrouter.WithSleep(func(context.Context, time.Duration) error {
+		if f := rg.onSleep.Load(); f != nil {
+			(*f)()
+		}
+		return nil
+	})}
 	if url != "" {
 		opts = append(opts, openrouter.WithURL(url))
 	}
@@ -206,7 +215,8 @@ func newRigAssets(t testing.TB, a *openrouter.Assets, m dataclass.Masker, tr ope
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &rig{r: r, assets: a, sink: ms, clock: clock, st: st}
+	rg.r, rg.assets, rg.sink, rg.clock, rg.st = r, a, ms, clock, st
+	return rg
 }
 
 func newAuditSigner(t testing.TB) (audit.Signer, audit.Keyring) {

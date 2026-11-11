@@ -73,7 +73,7 @@ Vault Agent запускается **init-контейнером** с `exit_afte
 - **Response wrapping** (`-wrap-ttl`) для ручной передачи секретов между людьми при начальной загрузке и для unseal/recovery-материалов.
 - **Два audit device:** файл и внешний syslog/SIEM. Vault отказывает в запросах, если не пишется ни один, — это fail-closed.
 - **Алерты:** запись в `sys/policy/*`, `sys/policies/*`, `auth/*/role/*`, `sys/auth/*`, `sys/audit/*`, `sys/mounts/*`; выпуск root-токена (`sys/generate-root-token/*`) и смена ключей (`sys/rotate/*`) — оба пути пишутся в audit (проверено на стенде для generate-root); узел sealed дольше N минут (N — решение SRE; надёжный сигнал — под не Ready, потому что readiness-проба `bao status` у sealed даёт код 2; `sys/metrics` по умолчанию выключен — `prometheus is not enabled`, нужен блок `telemetry`, а для sealed-узла ещё `unauthenticated_metrics_access`, на стенде это не включалось); попытки unseal на sealed-узле в audit не попадают (аудит недоступен, пока хранилище запечатано), только в лог сервера; чтение `aegis-kv/data/mvp-a/*` не той сущностью; всплеск `permission denied` и неудачных входов.
-- **HA:** integrated storage Raft на 3 или 5 узлах, зашифрованные снапшоты, отдельный namespace и узлы; NetworkPolicy: к Vault ходят только поды агентов и CI-применитель.
+- **HA:** integrated storage Raft на 3 или 5 узлах, зашифрованные снапшоты, отдельный namespace и узлы; NetworkPolicy: к OpenBao ходят агенты intake и узлы OpenBao ([`deploy/vault/network/`](../../deploy/vault/network/)); сетевой путь CI-применителя не определён; `kubectl exec` и `port-forward` идут вне NetworkPolicy — ограничиваются RBAC.
 - **Unseal: Shamir, 3 доли** (по одной у `limpjungle`, `Oltix146`, `trix13371`), порог 2. При `init` доли и root-токен шифруются PGP-ключами держателей (`pgp_keys`, `root_token_pgp_key`); доли вводятся только через stdin (`key=-`) или запрос с `port-forward`, не в argv и не в историю shell. После рестарта узел остаётся sealed, пока не введены две доли. Решено 11.11.2026 (на утверждении Security, `trix13371`), обоснование — §9.
 - **Root-токен** отзывается сразу после начальной настройки. При Shamir доли unseal — одновременно кворум `generate-root` (break-glass) и `rotate-keys` (`sys/rotate/root/*`, смена держателя): 3 держателя, порог 2. Безтокенные `sys/generate-root/*` и `sys/rekey/*` в OpenBao 2.7.2 отключены по умолчанию (405; причина — CVE-2026-5807, GHSA-q74w-hv5x-6hxf), а `sys/generate-root-token/*` и `sys/rotate/root/*` требуют токена. Флаги листенера `disable_unauthed_generate_root_endpoints` и `disable_unauthed_rekey_endpoints` в `false` **не включать** — кроме процедуры восстановления bgi ниже; тест `TestOpenBaoHANoUnauthedEndpoints` это запрещает для боевых values.
 - **Токен-инициатор break-glass (`bgi`).** Нужен, чтобы начать `generate-root` или смену ключей, когда root отозван; без двух долей бесполезен (проверено на стенде: утёкший `bgi` может только начать процедуру).
@@ -102,7 +102,7 @@ RT-18 выполняется после развёртывания Vault; в Э�
 Выбор не сделан. Два пути:
 
 - **Vault Transit.** Ключ `ed25519`, `exportable=false`, формат цепочки не меняется. Но процессу понадобится токен Vault: это ломает свойство «нет токена в поде», потребует sidecar и отдельной политики `transit/sign`, а значит пересмотра T-36.
-- **Yandex KMS.** ECDSA P-256, `ChainFormat = 4`, сначала верификаторы. IAM-токен — через федерацию сервисных аккаунтов.
+- **Yandex KMS.** ECDSA P-256, следующий уровень `ChainFormat` (5; уровень 4 занят причиной `egress_canary`), сначала верификаторы. IAM-токен — через федерацию сервисных аккаунтов.
 
 До выбора ключ подписи лежит в Vault KV и доставляется файлом. Это лучше, чем сейчас (аудит доступа, политика по identity), но T-23 (KMS/HSM) не закрывает. После выбора меняется строка `AEGIS_AUDIT_KEY_FILE` в §3.
 
@@ -124,7 +124,7 @@ RT-18 выполняется после развёртывания Vault; в Э�
 
 ### Unseal
 
-**Решено 11.11.2026 (на утверждении Security, `trix13371`): Shamir 3/2** — 3 доли, порог 2, Raft на 3 узлах, без второго OpenBao и без HSM. Боевые values — [`deploy/vault/server/openbao-ha.yaml`](../../deploy/vault/server/openbao-ha.yaml) (блока `seal` нет), стенд — `deploy/vault/dev/run-ha.sh`.
+**Решено 11.11.2026, утверждено Security (PR №6 одобрен `trix13371` и слит 11.11.2026): Shamir 3/2** — 3 доли, порог 2, Raft на 3 узлах, без второго OpenBao и без HSM. Боевые values — [`deploy/vault/server/openbao-ha.yaml`](../../deploy/vault/server/openbao-ha.yaml) (блока `seal` нет), стенд — `deploy/vault/dev/run-ha.sh`.
 
 | Вариант | Итог |
 |---|---|
@@ -144,7 +144,7 @@ RT-18 выполняется после развёртывания Vault; в Э�
 
 | № | Вопрос | Что сделать | Важность | Зависит от |
 |---|---|---|---|---|
-| 1 | ~~Vault или OpenBao (§9)~~ Выбран OpenBao (10.11.2026). ~~Способ unseal~~ Решено 11.11.2026 (на утверждении Security, `trix13371`): Shamir 3/2, Raft 3 (§9); проверено на HA-стенде `deploy/vault/dev/run-ha.sh` | Утверждение Security при ревью PR | Высокая | — |
+| 1 | ~~Vault или OpenBao (§9)~~ Выбран OpenBao (10.11.2026). ~~Способ unseal~~ Решено и утверждено Security 11.11.2026 (PR №6, `trix13371`): Shamir 3/2, Raft 3 (§9); проверено на HA-стенде `deploy/vault/dev/run-ha.sh` | Утверждение Security при ревью PR | Высокая | — |
 | 2 | Развёртывание | OpenBao в HA (Raft 3, Shamir 3/2), два audit device и алерты (§5), Kubernetes auth, применение политик из `deploy/vault/` CI-применителем, периодическая сверка расхождений с Git, отзыв root-токена, церемония init: PGP-ключи трёх держателей, токен-инициатор generate-root | **Блокер shadow** (T-36 — P1) | п. 1 (утверждение) |
 | 3 | Загрузка секретов | Загрузить секреты intake в `aegis-kv/data/mvp-a/…` с response wrapping при передаче между людьми | **Блокер shadow** | п. 2 |
 | 4 | RT-18 (§6) | Прогнать после развёртывания, результат — в отчёт red-team | **Блокер shadow** | п. 2 |

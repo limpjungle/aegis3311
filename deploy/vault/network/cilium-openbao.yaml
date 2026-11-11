@@ -1,0 +1,73 @@
+# T-36: ingress и egress подов OpenBao. Требуется Cilium (L7-фильтр DNS); без CRD `kubectl apply` падает, default-deny остаётся.
+# Namespace — синхронно с vault.address агента (deploy/vault/agent/aegis-intake.json); тест сверяет их. Порты — порты пода.
+# kubelet-пробы правил не требуют: readiness чарта — exec (`bao status`), liveness выключена; httpGet от своего узла Cilium пропускает.
+# `kubectl exec` и `port-forward` идут через API-сервер, kubelet и CRI внутрь netns пода (loopback) — NetworkPolicy к ним не применяется.
+# Контроль — RBAC на pods/exec и pods/portforward в этом namespace.
+# Метрик нет (telemetry в values выключена, sys/metrics закрыт): правила для Prometheus нет; тест падает, если telemetry появится.
+# Сетевой путь CI-применителя к OpenBao не определён (stage-0a): правило не задано, fail-closed. Audit device пишут в файл и stdout.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: openbao-server
+  namespace: vault
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+      component: server
+  ingress:
+    # I1. Vault Agent подов intake (init-контейнер).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: aegis-system
+            app: aegis-intake
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+    # I2. Узлы OpenBao между собой: API (retry_join, leader_api_addr) и Raft (8201, forwarding).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: vault
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+            - port: "8201"
+              protocol: TCP
+  egress:
+    # E1. DNS только к kube-dns и только для нужных имён. kubernetes_host в auth/kubernetes/config — https://kubernetes.default.svc:443;
+    #     Go-резолвер после REFUSED на search-именах доходит до полного имени, поэтому в конфиге лучше сразу kubernetes.default.svc.cluster.local.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchName: kubernetes.default.svc.cluster.local
+              - matchPattern: "*.openbao-internal.vault.svc.cluster.local"
+    # E2. Узлы OpenBao.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: vault
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+            - port: "8201"
+              protocol: TCP
+    # E3. API-сервер (TokenReview, service_registration). Порт обязателен: в self-hosted entity включает весь узел (kubelet 10250).
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443" # kube-api-port
+              protocol: TCP

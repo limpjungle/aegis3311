@@ -1,4 +1,4 @@
-# Общие функции стенда (source из run.sh и run-ha.sh). Ожидает переменные: here, cluster, ctx, image, cli.
+# Общие функции стенда (source из run.sh, run-ha.sh и deploy/intake/dev/run-netpol.sh). Ожидает переменные: here, cluster, ctx, image, cli.
 k() { kubectl --context "$ctx" "$@"; }
 fails=0
 pass() { echo "PASS  $*"; }
@@ -57,4 +57,74 @@ put_all() {
   srv kv put aegis-kv/mvp-a/intake/killswitch-s3 access_key_id=dev-ks-id secret_key=dev-ks-secret >/dev/null
   srv kv put aegis-kv/mvp-a/audit-anchor access_key_id=dev-anchor-id secret_key=dev-anchor-secret >/dev/null
   srv kv put aegis-kv/mvp-a/other secret=not-for-intake >/dev/null
+}
+
+# --- Cilium (режим cilium в run-ha.sh и run-netpol.sh в deploy/intake/dev) -----------------------------------------
+skip() { echo "SKIP  $*"; }
+
+cilium_ver=1.20.4
+cilium_img=quay.io/cilium/cilium:v$cilium_ver;             cilium_digest=sha256:20fe92e4c86641233a450098c158d2d29085f3419931ab6bf681d2485dedf16e
+operator_img=quay.io/cilium/operator-generic:v$cilium_ver; operator_digest=sha256:7a7a3489dc66ad67e420d285c8a8d2e169b0957ad15e120f593d27081bf38d82
+
+# Образ с тегом и digest (хост скачивает по digest, в кластере — по тегу с IfNotPresent: digest при `minikube image load` теряется).
+load_one() { # $1 — образ с тегом, $2 — digest
+  docker pull -q "$1@$2" >/dev/null
+  docker tag "$1@$2" "$1"
+  [ "$(docker inspect --format '{{index .RepoDigests 0}}' "$1")" = "${1%:*}@$2" ] || { echo "digest $1 не совпал" >&2; exit 1; }
+  minikube -p "$cluster" image load "$1" >/dev/null
+}
+
+# minikube без CNI + Cilium из Helm-чарта (встроенный Envoy в агенте, l7Proxy); образы закреплены по digest и загружаются с хоста.
+# Без `Proxy Status: OK` стенд останавливается: L7-политики (DNS-фильтр, serverNames) без прокси не работают.
+start_cluster_cilium() {
+  minikube status -p "$cluster" >/dev/null 2>&1 || \
+    minikube start -p "$cluster" --driver=docker --network-plugin=cni --cni=false --cpus=2 --memory=4096 >/dev/null
+  load_one "$cilium_img" "$cilium_digest"
+  load_one "$operator_img" "$operator_digest"
+  helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
+  helm upgrade --install cilium cilium/cilium --kube-context "$ctx" --version "$cilium_ver" -n kube-system \
+    --set operator.replicas=1 --set ipam.mode=kubernetes --set image.useDigest=false --set operator.image.useDigest=false \
+    --set image.pullPolicy=IfNotPresent --set operator.image.pullPolicy=IfNotPresent --set envoy.enabled=false --set l7Proxy=true >/dev/null
+  k -n kube-system rollout status ds/cilium --timeout=300s >/dev/null
+  k -n kube-system rollout status deploy/cilium-operator --timeout=300s >/dev/null
+  k wait --for=condition=Ready node --all --timeout=180s >/dev/null
+  k -n kube-system rollout status deploy/coredns --timeout=180s >/dev/null
+  echo "== Cilium $cilium_ver"
+  local cstat
+  cstat=$(k -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status 2>&1) || true
+  if grep -q 'Proxy Status:.*OK' <<<"$cstat"; then pass "Proxy Status: OK"
+  else fail "Proxy Status не OK (L7-прокси не работает)"; grep -i 'proxy' <<<"$cstat" | sed 's/^/      /'; echo "провалов: $fails"; exit 1; fi
+}
+
+# Применяет манифесты политик из Git (каталоги с *.yaml); меняется только порт API-сервера по маркеру `# kube-api-port`.
+# Порядок: dry-run=server для всех, затем cilium-*.yaml, затем остальные (default-deny после правил, иначе поды изолированы).
+apply_netpols() { # $1... — каталоги; namespaces в них должны существовать
+  local api_port tmp d f i=0 o args=()
+  api_port=$(k -n default get endpoints kubernetes -o jsonpath='{.subsets[0].ports[0].port}' 2>/dev/null)
+  tmp=$(mktemp -d)
+  for d in "$@"; do
+    i=$((i + 1)); mkdir "$tmp/$i"
+    for f in "$d"/*.yaml; do
+      o="$tmp/$i/$(basename "$f")"
+      sed "s/\(port: \"\)443\(\" # kube-api-port\)/\1$api_port\2/" "$f" > "$o"
+      if [ "$api_port" != 443 ] && grep -q 'kube-api-port' "$f" && cmp -s "$o" "$f"; then fail "маркер kube-api-port не найден в $f"; fi
+      args+=(-f "$o")
+    done
+  done
+  if k apply --dry-run=server "${args[@]}" >/dev/null; then pass "kubectl apply --dry-run=server"
+  else fail "dry-run=server отклонён"; rm -rf "$tmp"; echo "провалов: $fails"; exit 1; fi
+  for f in "$tmp"/*/cilium-*.yaml; do k apply -f "$f" >/dev/null; done
+  for f in "$tmp"/*/*.yaml; do case "${f##*/}" in cilium-*) ;; *) k apply -f "$f" >/dev/null ;; esac; done
+  rm -rf "$tmp"
+}
+
+# Ждёт готовности endpoint'а Cilium (политики загружены): $1 — метка вида k8s:app=aegis-intake; до 120 с.
+wait_cilium_ready() {
+  local st="" _
+  for _ in $(seq 1 60); do
+    st=$(k -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg endpoint list -o json 2>/dev/null \
+         | jq -r --arg l "$1" '[.[] | select(.status.identity.labels | index($l)) | .status.state] | first // ""') || st=""
+    [ "$st" = ready ] && return 0; sleep 2
+  done
+  return 1
 }

@@ -288,8 +288,8 @@ func (r *DecisionRecord) Validate() error {
 var (
 	notSentReasons = map[string]bool{"mode_off": true, "required_excluded": true, "context_ceiling": true,
 		"budget_incident": true, "budget_service_day": true, "unavailable": true, "halted": true,
-		"canceled": true}
-	degradeReasons    = map[string]bool{"unavailable": true, "halted": true, "budget_incident": true, "budget_service_day": true}
+		"canceled": true, "egress_canary": true}
+	degradeReasons    = map[string]bool{"unavailable": true, "halted": true, "budget_incident": true, "budget_service_day": true, "egress_canary": true}
 	excludeReasons    = map[string]bool{"source_class": true, "unknown_source": true, "masker_failure": true, "personal_data": true, "unknown_category": true, "malformed": true}
 	answerStatuses    = map[string]bool{"ok": true, "truncated": true, "schema_invalid": true, "invalid_json": true, "refusal": true, "content_filter": true, "provider_mismatch": true, "error": true}
 	maxUntrustedBytes = 256

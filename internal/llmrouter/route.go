@@ -18,7 +18,7 @@ type Result struct {
 	Reason    string
 	DegradeL1 bool                   // true при unavailable, halted, egress_canary, budget_*
 	Role      Role                   // endpoint, на который ушёл (или готовился) запрос; "" без Prepared
-	Prepared  *Prepared              // nil при mode_off, unavailable, halted
+	Prepared  *Prepared              // nil при mode_off, unavailable, halted до подготовки
 	Call      *openrouter.CallResult // последний вызов endpoint'а, которому атрибутирована запись; nil при not_sent
 	// Накоплено по всем endpoint'ам одного Route: попытки, учтённый расход, признак переключения endpoint'а.
 	Attempts int
@@ -171,6 +171,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 			return r.partial(res, err)
 		}
 		// Canary: проверяются те же байты, что уходят в Post (Client.Call передаёт prep.Body на каждой попытке без изменений).
+		// Остановка, зафиксированная после selectEndpoint, ловится в Reserve перед каждой попыткой.
 		// До резерва бюджета, чтобы заблокированный запрос не тратил счёт; не в Transport — там ошибка дала бы ретраи и endpoint_down.
 		if _, hit := r.o.Canary.Find(prep.Body); hit {
 			r.canaryBlocked.Add(1)
@@ -184,6 +185,7 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 		}
 		ep := r.eps[role]
 		bres := r.bud.forIncident(req.IncidentID, req.Service, r.o.Clock.Now)
+		bres.gate = r.haltedNow
 		est := int64(prep.EstInputTokens + prep.MaxTokens)
 		reservation := openrouter.Reservation{Tokens: est, USD: openrouter.CostOf(float64(prep.EstInputTokens), float64(prep.MaxTokens), prep.Profile.Prices),
 			Prices: prep.Profile.Prices}
@@ -259,12 +261,15 @@ func (r *Router) Route(ctx context.Context, req Request) (*Result, error) {
 					reason = denyIncident
 				case denyStateStore:
 					reason = "halted" // резерв не записан в store; роутер остановлен (state_store)
+				case denyHalted:
+					reason = "halted" // параллельная остановка до первой попытки
 				}
 				res.notSent(reason)
 				return res, nil
 			}
 			res.ErrorKind = "budget"
-			if bres.lastDenied() == denyStateStore { // резерв не записан в store: не исчерпание счёта
+			// Резерв не записан в store или параллельная остановка (пауза между ретраями, резерв после switched): не исчерпание счёта.
+			if d := bres.lastDenied(); d == denyStateStore || d == denyHalted {
 				res.ErrorKind = "stopped"
 			}
 		case openrouter.CallStopped:

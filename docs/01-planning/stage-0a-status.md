@@ -40,7 +40,7 @@
 | 4 | ~~Выбрать Vault или OpenBao~~ Выбран OpenBao (10.11.2026). Unseal: Raft 3, Shamir 3/2, HA-стенд проверен (решено 11.11.2026, утверждено Security: [PR №6](https://github.com/limpjungle/aegis3311/pull/6) одобрен `trix13371` и слит 11.11.2026; [identity-secrets-mvp-a.md §9](../02-security/identity-secrets-mvp-a.md#9-vault-или-openbao)) | Решено | — |
 | 4 | Токены Alertmanager и Prometheus: в коде необязательны, а шаблоны агента требуют оба секрета в KV — загружать всегда или сделать шаблоны условными | Средняя | — |
 | 5 | Формальный прогон red-team и отчёт (RT-05/RT-06 — от RAG, RT-11 — от п. 3, RT-18 — от развёртывания Vault) | **Блокер shadow** | п. 2–4 |
-| 6 | Security: egress-прокси заменён на Cilium toFQDNs + SNI. Замена сканирования на canary-маркеры сделана: проверка в роутере перед отправкой ([data-classes.md](../02-security/data-classes.md) §5.2), реакция — halt роутера до `Resume` — утверждение Security | Средняя | — |
+| 6 | Security: egress-прокси заменён на Cilium toFQDNs + SNI. Замена сканирования на canary-маркеры сделана: проверка в роутере перед отправкой ([data-classes.md](../02-security/data-classes.md) §5.2), реакция — halt роутера до `Resume` — утверждение Security. Включение двухфазное, `ChainFormat = 4`: после первой записи `egress_canary` откат ниже rollback floor невозможен ([migrations.md](../04-operations/migrations.md) «Откат») | Средняя | — |
 | 7 | Провести учение G0 по kill switch | Высокая | Стенд (инфраструктура) |
 | 9 | Решить, нужен ли RAG в MVP-A | Средняя | — |
 | 10 | Подтвердить статус DPA с OpenRouter (ZDR), legal, DPIA, инвентаризации ПДн | **Блокер** | — |
@@ -97,7 +97,7 @@
 
 | # | Что сделать | Важность | Зависит от |
 |---|---|---|---|
-| 2 | KMS-подписант цепочки аудита; для Yandex KMS — ECDSA P-256 в keyring и `ChainFormat = 4` (сначала верификаторы) | **Блокер shadow** | Выбор KMS |
+| 2 | KMS-подписант цепочки аудита; для Yandex KMS — ECDSA P-256 в keyring и следующий уровень формата цепочки (5; уровень 4 занят причиной `egress_canary`; сначала верификаторы) | **Блокер shadow** | Выбор KMS |
 | 2 | ~~Добавить `internal/audit/...` и `internal/routersvc` в race-шаг `ci.yml`~~ Сделано 11.11.2026 | Решено | — |
 | 11 | `aegis-intake export` для разметки SRE | Средняя | Этап 3a |
 | 12 | Golden-набор v6: убрать причину `insufficient_data_policy` из enum при политике не `rollback` | Низкая | Следующая смена набора |

@@ -10,12 +10,13 @@ import (
 //
 //	1 — decision-record/v1 и checkpoint;
 //	2 — router-event/v1 и блок intake в decision record;
-//	3 — killswitch-event/v1 (поле bootstrap), блок kill_switch в decision record, intake.source = replay.snapshot.
+//	3 — killswitch-event/v1 (поле bootstrap), блок kill_switch в decision record, intake.source = replay.snapshot;
+//	4 — router_halted.reason = egress_canary, llm.reason = egress_canary (not_sent).
 //
-// Новое поле или новая схема записи повышает уровень. Порядок развёртывания: сначала верификаторы (aegis-audit и всё,
+// Новое поле, новая схема записи или новое значение перечисления, отвергаемое старой сборкой, повышает уровень. Порядок развёртывания: сначала верификаторы (aegis-audit и всё,
 // что вызывает Verify), потом писатели. Писатель уровня N на той же цепочке не откатывается к сборке ниже N: она
 // не пройдёт собственную проверку при открытии (OpenWriter строг).
-const ChainFormat = 3
+const ChainFormat = 4
 
 // ErrNewerFormat — цепочка содержит запись, которую эта сборка не понимает: неизвестную схему aegisops/* или поле,
 // которого нет в известной схеме. Скорее всего, запись сделана более новой сборкой.

@@ -138,24 +138,39 @@ expect_noconn() {
   tcp "$@" || rc=$?
   case $rc in 1) pass "$d" ;; 0) fail "$d: соединение есть" ;; *) fail "стенд: exec не выполнился: $d" ;; esac
 }
-# curl из пода с произвольными аргументами: код возврата curl в $crc (99 — сбой kubectl exec). TLS не проверяется (-k): проверяется только допуск политикой.
+# curl из пода с произвольными аргументами: код возврата curl в $crc (99 — сбой kubectl exec), тайминги соединения в $ctc (TCP) и $cta (TLS):
+# 0 — этап не завершён. TLS не проверяется (-k): проверяется только допуск политикой.
 crl() { # $1 ns, $2 под, остальное — аргументы curl
   local ns=$1 pod=$2 out; shift 2
-  out=$(k -n "$ns" exec "$pod" -c curl -- sh -c "curl -sk -o /dev/null --connect-timeout 3 --max-time 6 $*; echo rc=\$?" 2>/dev/null) || { crc=99; return; }
-  [[ $out =~ ^rc=([0-9]+)$ ]] && crc=${BASH_REMATCH[1]} || crc=99
+  ctc=0 cta=0
+  out=$(k -n "$ns" exec "$pod" -c curl -- sh -c "curl -sk -o /dev/null -w 't=%{time_connect} %{time_appconnect}\n' --connect-timeout 3 --max-time 6 $*; echo rc=\$?" 2>/dev/null) || { crc=99; return; }
+  if [[ $out =~ t=([0-9.]+)\ ([0-9.]+)[[:space:]]+rc=([0-9]+)$ ]]; then
+    ctc=${BASH_REMATCH[1]} cta=${BASH_REMATCH[2]} crc=${BASH_REMATCH[3]}
+  elif [[ $out =~ rc=([0-9]+)$ ]]; then crc=${BASH_REMATCH[1]}
+  else crc=99; fi
 }
-expect_curl() { # $1 — ok | fail, $2 описание, остальное — аргументы crl
+nonzero() { ! [[ $1 =~ ^0*\.?0*$ ]]; }  # время curl отлично от нуля
+# $1 — ok | fail | tls_fail | dns_fail, $2 описание, остальное — аргументы crl.
+#   fail      — отказ при установленном TCP (не DNS и не L3-дроп);
+#   tls_fail  — TCP установлен, TLS не завершён (отказ на этапе ClientHello): иначе проверка SNI ничего не доказывает (DNS 6, connect 7, дроп 28);
+#   dns_fail  — curl 6 (имя не резолвится).
+expect_curl() {
   local want=$1 d=$2; shift 2
   crl "$@"
+  local t="curl $crc, tcp=$ctc tls=$cta"
   case "$crc:$want" in
     99:*) fail "стенд: exec не выполнился: $d" ;;
-    0:ok|[1-9]*:fail) pass "$d" ;;
-    0:fail) fail "$d: запрос прошёл" ;;
-    *) fail "$d: curl завершился с кодом $crc" ;;
+    0:ok) pass "$d ($t)" ;;
+    0:*) fail "$d: запрос прошёл ($t)" ;;
+    *:ok) fail "$d: curl завершился с кодом $crc" ;;
+    6:dns_fail) pass "$d ($t)" ;;
+    *:dns_fail) fail "$d: ожидался отказ DNS (curl 6), $t" ;;
+    *:tls_fail) if nonzero "$ctc" && ! nonzero "$cta"; then pass "$d ($t)"; else fail "$d: отказ не на TLS-этапе ($t; DNS/connect/timeout)"; fi ;;
+    *:fail) if nonzero "$ctc"; then pass "$d ($t)"; else fail "$d: отказ без установленного TCP ($t)"; fi ;;
   esac
 }
 # Пять вариантов TLS к одному IP: SNI заданного имени, чужой SNI, без SNI, не-TLS на 443. $1 ok|fail для всех сразу не годится — зовутся по одному.
-sni_curl() { # $1 ok|fail, $2 описание, $3 ns, $4 под, $5 SNI, $6 IP
+sni_curl() { # $1 ok|tls_fail, $2 описание, $3 ns, $4 под, $5 SNI, $6 IP
   expect_curl "$1" "$2" "$3" "$4" --resolve "$5:443:$6" "https://$5/"
 }
 dns() { k -n "$1" exec "$2" -c bb -- nslookup "$3" 2>&1 || true; }
@@ -209,14 +224,15 @@ expect_conn "intake: loopback :9464 (exec и curl исправны)" aegis-syste
 expect_noconn "прямой IP_OR до DNS запрещён" aegis-system intake "$ip_or" 443
 dns aegis-system intake openrouter.ai. | grep -q "$ip_or" && pass "DNS: openrouter.ai -> IP_OR" || fail "DNS: openrouter.ai не вернул IP_OR"
 dns aegis-system intake storage.yandexcloud.net. | grep -q "$ip_s3" && pass "DNS: storage.yandexcloud.net -> IP_S3" || fail "DNS: storage.yandexcloud.net не вернул IP_S3"
-# serverNames: SNI сверяется в ClientHello. TCP-соединение с Envoy устанавливается всегда, отказ — сброс после ClientHello (curl 35 и др.).
+# DNS-запросы выше обязательны: toFQDNs пускает IP только после резолва имени из пода (без них --resolve даст L3-дроп, curl 28/7, похожий на «отказ»).
+# serverNames: SNI сверяется в ClientHello. TCP-соединение с Envoy устанавливается всегда, отказ — сброс после ClientHello (curl 35 и др.): tls_fail требует tcp>0 и tls=0.
 echo "== SNI"
 sni_curl ok "SNI openrouter.ai -> IP_OR проходит" aegis-system intake openrouter.ai "$ip_or"
-sni_curl fail "SNI evil.example -> IP_OR (тот же IP, чужое имя) отклонён" aegis-system intake evil.example "$ip_or"
-expect_curl fail "TLS без SNI -> IP_OR отклонён" aegis-system intake "https://$ip_or/"
+sni_curl tls_fail "SNI evil.example -> IP_OR (тот же IP, чужое имя) отклонён" aegis-system intake evil.example "$ip_or"
+expect_curl tls_fail "TLS без SNI -> IP_OR отклонён" aegis-system intake "https://$ip_or/"
 expect_curl fail "не-TLS на :443 -> IP_OR отклонён" aegis-system intake --resolve "openrouter.ai:443:$ip_or" "http://openrouter.ai:443/"
 sni_curl ok "SNI storage.yandexcloud.net -> IP_S3 проходит" aegis-system intake storage.yandexcloud.net "$ip_s3"
-sni_curl fail "SNI openrouter.ai -> IP_S3 отклонён (SNI сверяется по правилу IP)" aegis-system intake openrouter.ai "$ip_s3"
+sni_curl tls_fail "SNI openrouter.ai -> IP_S3 отклонён (SNI сверяется по правилу IP)" aegis-system intake openrouter.ai "$ip_s3"
 
 echo "== запрещено"
 dns aegis-system intake evil.aegis.test. | grep -q REFUSED && pass "evil.aegis.test -> REFUSED" || fail "evil.aegis.test не REFUSED"
@@ -239,7 +255,7 @@ if [ "$mode" = internet ]; then
   crl nettest probe https://openrouter.ai/api/v1/models
   if [ "$crc" = 0 ]; then
     expect_curl ok "intake -> https://openrouter.ai/api/v1/models" aegis-system intake https://openrouter.ai/api/v1/models
-    expect_curl fail "intake -> https://example.com отказ" aegis-system intake https://example.com
+    expect_curl dns_fail "intake -> https://example.com отказ" aegis-system intake https://example.com
   else
     skip "intake -> https://openrouter.ai: probe не достаёт интернет (curl $crc)"
     skip "intake -> https://example.com: probe не достаёт интернет"

@@ -282,6 +282,9 @@ func (r *Router) quarantine(ep *endpoint) error {
 	return r.transition(ep, epQuarantined, "provider_mismatch", 0, 0)
 }
 
+// haltedNow — текущее состояние остановки под r.mu; проверка перед каждой попыткой (pairReserver.gate).
+func (r *Router) haltedNow() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.halted }
+
 // haltCanary: в теле запроса найден canary-маркер — маскировщик пропустил данные, которые не должны уходить наружу.
 func (r *Router) haltCanary() error {
 	r.mu.Lock()

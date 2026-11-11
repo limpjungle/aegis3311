@@ -10,8 +10,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/limpjungle/aegis3311/internal/dataclass"
 	"github.com/limpjungle/aegis3311/internal/openrouter"
+	"github.com/limpjungle/aegis3311/internal/pyjson"
+	"github.com/limpjungle/aegis3311/internal/routerstate"
 )
 
 // Фрагмент с canary-маркером: кириллица и перевод строки вокруг, регистр маркера не совпадает с файлом.
@@ -305,5 +309,195 @@ func TestCanaryRouteRetriesSameBytes(t *testing.T) {
 	}
 	if !bytes.Equal(bodies[0], res.Prepared.Body) {
 		t.Error("проверенные байты (Prepared.Body) не совпадают с ушедшими в Post")
+	}
+}
+
+// gateMasker: первый вызов Mask сигнализирует о входе и ждёт release; остальные проходят без задержки.
+type gateMasker struct {
+	identityMasker
+	first   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *gateMasker) Mask(ctx context.Context, meta dataclass.FragmentMeta, v *pyjson.Value) (*pyjson.Value, dataclass.MaskReport, error) {
+	if m.first.CompareAndSwap(false, true) {
+		close(m.entered)
+		select {
+		case <-m.release:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	return m.identityMasker.Mask(ctx, meta, v)
+}
+
+// Основной сценарий ревью: чистый запрос A подготавливается (выбор endpoint'а уже или ещё не сделан), в это время
+// запрос B с маркером останавливает роутер; A не должен уйти в сеть.
+func TestCanaryRouteHaltWhilePreparing(t *testing.T) {
+	gm := &gateMasker{entered: make(chan struct{}), release: make(chan struct{})}
+	var bodies [][]byte
+	var bmu sync.Mutex
+	tr := &stubTransport{post: func(b []byte) (openrouter.Response, error) {
+		bmu.Lock()
+		bodies = append(bodies, append([]byte(nil), b...))
+		bmu.Unlock()
+		return reply("Inceptron", 10, 5), nil
+	}}
+	rg := newRig(t, gm, tr, "", nil)
+	rg.r.o.Canary = mustCanary(t, canaryRouteMarker)
+	before := budgetsOf(rg)
+
+	type out struct {
+		res *Result
+		err error
+	}
+	ch := make(chan out, 1)
+	go func() {
+		res, err := rg.r.Route(context.Background(), canaryReq(t, "clean"))
+		ch <- out{res, err}
+	}()
+	select {
+	case <-gm.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A не дошёл до маскировщика")
+	}
+	resB, errB := rg.r.Route(context.Background(), canaryReq(t, canaryRouteMarker))
+	if errB != nil || resB == nil || resB.Outcome != "not_sent" || resB.Reason != "egress_canary" {
+		t.Fatalf("B: %v %+v", errB, resB)
+	}
+	if st := rg.r.State(); !st.Halted || st.HaltReason != "egress_canary" {
+		t.Fatalf("состояние: %+v", st)
+	}
+	close(gm.release)
+	var o out
+	select {
+	case o = <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatal("A не завершился")
+	}
+	if o.err != nil || o.res == nil {
+		t.Fatalf("A: %v %v", o.res, o.err)
+	}
+	a := o.res
+	if a.Outcome != "not_sent" || a.Reason != "halted" || !a.DegradeL1 || a.Attempts != 0 || a.Call != nil {
+		t.Fatalf("A: outcome=%q reason=%q l1=%v attempts=%d call=%v", a.Outcome, a.Reason, a.DegradeL1, a.Attempts, a.Call)
+	}
+	applyOK(t, a)
+	if tr.calls != 0 || len(bodies) != 0 {
+		t.Fatalf("Post вызван %d раз", tr.calls)
+	}
+	if after := budgetsOf(rg); after != before {
+		t.Errorf("бюджеты изменились: %s -> %s", before, after)
+	}
+	if n := len(rg.st.Snapshot().Holds); n != 0 {
+		t.Errorf("резервов: %d", n)
+	}
+	if halts := len(rg.sink.RouterEvents()); halts != 1 {
+		t.Errorf("router_halted записан %d раз", halts)
+	}
+}
+
+// Остановка в паузе между ретраями: вторая попытка не уходит; исход sent/stopped, причины нет.
+func TestRouteHaltBetweenRetries(t *testing.T) {
+	tr := &stubTransport{post: func([]byte) (openrouter.Response, error) { return openrouter.Response{Status: 503}, nil }}
+	rg := newRig(t, &identityMasker{}, tr, "", nil)
+	f := func() { _ = rg.r.haltCanary() }
+	rg.onSleep.Store(&f)
+	res, err := rg.r.Route(context.Background(), routeReq(t))
+	if err != nil || res == nil {
+		t.Fatalf("%v %v", res, err)
+	}
+	if tr.calls != 1 || res.Outcome != "sent" || res.ErrorKind != "stopped" || res.Attempts != 1 || res.Reason != "" {
+		t.Fatalf("calls=%d outcome=%q kind=%q attempts=%d reason=%q", tr.calls, res.Outcome, res.ErrorKind, res.Attempts, res.Reason)
+	}
+	applyOK(t, res)
+}
+
+// Gate резервирования: при остановке Reserve отказывает до обращения к хранилищу.
+func TestPairReserverGate(t *testing.T) {
+	id := routerstate.Identity{RouterID: "llm-router-test", Primary: "p", Fallback: "f"}
+	st := routerstate.NewMemory(id)
+	b := newBudgets(BudgetConfig{IncidentTokens: 1 << 40, ServiceDayTokens: 1 << 40}, st, routerstate.NewState(id))
+	now := func() time.Time { return time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC) }
+	p := b.forIncident("inc-1", "svc-1", now)
+	p.gate = func() bool { return true }
+	snap := fmt.Sprintf("%+v", st.Snapshot())
+	if h, ok := p.Reserve(100, 0); ok || h != nil {
+		t.Fatalf("резерв при остановке: %v %v", h, ok)
+	}
+	if d := p.lastDenied(); d != "halted" {
+		t.Errorf("lastDenied=%q", d)
+	}
+	if p.storeFailed() != nil {
+		t.Errorf("storeFailed: %v", p.storeFailed())
+	}
+	if got := fmt.Sprintf("%+v", st.Snapshot()); got != snap {
+		t.Errorf("store изменён:\n%s\n%s", snap, got)
+	}
+	p.gate = func() bool { return false }
+	h, ok := p.Reserve(100, 0)
+	if !ok || h == nil {
+		t.Fatal("резерв без остановки отклонён")
+	}
+	if len(st.Snapshot().Holds) != 1 {
+		t.Errorf("holds: %d", len(st.Snapshot().Holds))
+	}
+}
+
+// Смесь чистых и маркерных запросов: маркер не уходит никогда, чистые sent либо not_sent/halted. Запускать с -race.
+func TestCanaryRouteConcurrentMixed(t *testing.T) {
+	var posts atomic.Int64
+	var leaked atomic.Int64
+	tr := &stubTransport{post: func(b []byte) (openrouter.Response, error) {
+		posts.Add(1)
+		if bytes.Contains(bytes.ToLower(b), []byte(canaryRouteMarker)) {
+			leaked.Add(1)
+		}
+		return reply("Inceptron", 10, 5), nil
+	}}
+	rg := newCanaryRig(t, tr, mustCanary(t, canaryRouteMarker))
+	const n = 32
+	var wg sync.WaitGroup
+	res := make([]*Result, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			txt := fmt.Sprintf("clean %d", i)
+			if i%2 == 0 {
+				txt = fmt.Sprintf("x%d %s", i, canaryRouteMarker)
+			}
+			res[i], errs[i] = rg.r.Route(context.Background(), canaryReq(t, txt))
+		}(i)
+	}
+	wg.Wait()
+	if leaked.Load() != 0 {
+		t.Fatalf("тел с маркером в Post: %d", leaked.Load())
+	}
+	sent := 0
+	for i := 0; i < n; i++ {
+		if errs[i] != nil || res[i] == nil {
+			t.Errorf("%d: %v %v", i, res[i], errs[i])
+			continue
+		}
+		r := res[i]
+		switch {
+		case i%2 == 0 && r.Outcome == "not_sent" && (r.Reason == "egress_canary" || r.Reason == "halted"):
+		case i%2 == 1 && r.Outcome == "sent" && r.Reason == "":
+			sent++
+		case i%2 == 1 && r.Outcome == "not_sent" && r.Reason == "halted":
+		default:
+			t.Errorf("%d: %s/%s kind=%s", i, r.Outcome, r.Reason, r.ErrorKind)
+		}
+	}
+	if int64(sent) != posts.Load() {
+		t.Errorf("sent=%d posts=%d", sent, posts.Load())
+	}
+	if st := rg.r.State(); !st.Halted || st.HaltReason != "egress_canary" {
+		t.Fatalf("%+v", st)
+	}
+	if halts := len(rg.sink.RouterEvents()); halts != 1 {
+		t.Errorf("router_halted записан %d раз", halts)
 	}
 }

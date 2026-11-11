@@ -439,13 +439,15 @@ Default-deny (`aegis-system-default-deny`) закрывает ingress и egress 
 - **Подстраховка.** Go-резолвер после `REFUSED` идёт по search-списку; в Deployment intake задайте `dnsConfig.options: [{name: ndots, value: "1"}]` и используйте полные имена.
 - **Порты — порты пода** (после DNAT), не Service. Порт API-сервера у Yandex 443, у self-hosted 6443; правится в `cilium-egress.yaml` по маркеру `# kube-api-port`.
 
-Проверено на стенде [`deploy/intake/dev/run-netpol.sh`](../../deploy/intake/dev/run-netpol.sh) (Cilium 1.20.4, встроенный Envoy), 11.11.2026: 54 PASS, 0 провалов без интернета; SNI-проверки (`openrouter.ai` на IP OpenRouter проходит; чужой SNI на том же IP, TLS без SNI, не-TLS на :443 и `openrouter.ai` на IP S3 отклонены) — в этом прогоне. Режим `internet`: 0 провалов, 2 SKIP (из узла minikube нет выхода в интернет — реальный openrouter.ai не проверен). Ingress в OpenBao — стенд `deploy/vault/dev/run-ha.sh cilium`: 61 PASS, 0 провалов, 0 SKIP.
+Проверено на стенде [`deploy/intake/dev/run-netpol.sh`](../../deploy/intake/dev/run-netpol.sh) (Cilium 1.20.4, встроенный Envoy), 11.11.2026: 54 PASS, 0 провалов без интернета; SNI-проверки (`openrouter.ai` на IP OpenRouter проходит; чужой SNI на том же IP, TLS без SNI и `openrouter.ai` на IP S3 отклонены на TLS-этапе: curl 35, `tcp>0`, `tls=0`; не-TLS на :443 — curl 56 при установленном TCP) — в этом прогоне. Критерий отказа — тайминги curl, а не один код выхода: DNS-ошибка, connect refused и L3-дроп (6/7/28) отказом на TLS-этапе не считаются; прогон после этого изменения проверки — 11.11.2026, 54 PASS, 0 провалов. Режим `internet`: 0 провалов, 2 SKIP (из узла minikube нет выхода в интернет — реальный openrouter.ai не проверен). Ingress в OpenBao — стенд `deploy/vault/dev/run-ha.sh cilium`: 61 PASS, 0 провалов, 0 SKIP.
 
 ### Canary-маркеры: проверка исходящих запросов к LLM *(data-classes.md §5.2)*
 
 Замена сканирования трафика на egress-прокси: `llmrouter.Route` сравнивает итоговое тело запроса (те же байты, что уходят в POST) с маркерами из файла, после `AssertRequestSafe` и до резерва бюджета. Совпадение без учёта регистра ASCII — запрос не отправляется (`not_sent/egress_canary`, L1), роутер останавливается (`router_halted/egress_canary`) до `Resume`, растёт `aegis_intake_router_canary_blocked_total`, горит `IntakeEgressCanaryDetected`. Разбор — [degraded-mode.md](degraded-mode.md).
 
 В конфигурации роутера: `"canary": {"markers_file": "/etc/aegis/canary/markers.txt"}`. Файл — ConfigMap `aegis-canary-markers`, смонтированный read-only; по маркеру в строке, `#` и пустые строки пропускаются; маркер — 12–128 символов из `[A-Za-z0-9@._+-]` (их pyjson не экранирует), не более 256 маркеров, файл до 64 KiB, дубли без учёта регистра и пустой файл — ошибка старта. Без блока `canary` проверка выключена: в журнале `egress_canary_disabled`, метрика `aegis_intake_router_canary_markers 0` (в проде алерт `IntakeEgressCanaryDisabled`; допустимо только там, где маркеры не подбрасываются).
+
+Включение двухфазное ([migrations.md](migrations.md), «Порядок обновления» п. 9, «Откат»): сначала бинарь без блока `canary`, затем фиксация rollback floor и `aegis-audit` с `chain_format 4` везде, только после этого `canary.markers_file`. После первой записи `egress_canary` откат бинаря ниже floor невозможен; canary снимают удалением блока `canary`, не откатом образа.
 
 Границы: проверка слабее прокси там, где важна независимость от процесса (компрометация процесса intake, путь мимо `Route`), — та же зона доверия; сильнее прокси тем, что нет MITM. Усиление: `toFQDNs` + SNI (выше), потоки Hubble `intake → world:443` с алертом на объём относительно `sent`-записей, сверка расхода ключа OpenRouter.
 
@@ -455,5 +457,15 @@ Default-deny (`aegis-system-default-deny`) закрывает ingress и egress 
 2. `aegis-intake replay -config FILE -in snapshot.json -prepare-only` — красные команды RT-01/02/04 без живых источников.
 3. ~~Подтверждение п. 1–9 раздела «Допущения» владельцами окружения~~ — подтверждено 08.11.2026; остаётся убедиться по выводу `collect` (п. 1), что фактические имена метрик и меток совпадают с конфигурацией.
 4. `aegis-audit verify` после первых записей: блок `intake` читается новыми версиями; старые `aegis-audit` записи с этим блоком не прочтут — обновить все копии.
-5. В боевом кластере версия Cilium ≥ 1.13 (см. «Создание кластера»), политики из `deploy/intake/` и `deploy/vault/network/` применены; из пода intake проверены разрешённые и запрещённые направления, SNI-проверка (`curl --resolve openrouter.ai:443:<IP> https://evil.example/` — сброс), `cilium-dbg status` показывает рабочий прокси (`Proxy Status: OK`).
-6. Канарейка: маркеры посажены в staging, `canary.markers_file` задан, метрика `aegis_intake_router_canary_markers` > 0.
+5. В боевом кластере версия Cilium ≥ 1.13 (см. «Создание кластера»), политики из `deploy/intake/` и `deploy/vault/network/` применены; из пода intake проверены разрешённые и запрещённые направления, `cilium-dbg status` показывает рабочий прокси (`Proxy Status: OK`), SNI-проверка по процедуре:
+
+   ```
+   # из пода intake (или ephemeral debug-контейнера в нём: та же политика)
+   getent hosts openrouter.ai            # IP_OR; DNS-запрос обязателен: без него toFQDNs не пустит IP (дроп, curl 28 — ложный «отказ»)
+   curl -sk -o /dev/null --connect-timeout 3 --max-time 6 \
+     -w 'rc=%{exitcode} tcp=%{time_connect} tls=%{time_appconnect}\n' \
+     --resolve evil.example:443:<IP_OR> https://evil.example/
+   # ожидается: rc=35 (или 56), tcp>0, tls=0 — сброс после ClientHello. rc=6/7/28 или tcp=0 — проверка ничего не доказала.
+   # контроль: то же с openrouter.ai (--resolve openrouter.ai:443:<IP_OR> https://openrouter.ai/) — tls>0.
+   ```
+6. Канарейка: маркеры посажены в staging, `canary.markers_file` задан, метрика `aegis_intake_router_canary_markers` > 0; rollback floor зафиксирован, `aegis-audit version` везде показывает `chain_format 4`.

@@ -20,7 +20,7 @@ var eventIDRe = regexp.MustCompile(`^re-[0-9a-f]{32}$`)
 //
 //	endpoint_down | endpoint_up | endpoint_quarantined — переходы endpoint'а (Endpoint, Role);
 //	active_changed — смена активного endpoint'а (From → To, профиль или "none");
-//	router_halted — роутер остановлен (Reason: auth | estimator | audit_failed | state_store | state_lost | chain_lost);
+//	router_halted — роутер остановлен (Reason: auth | estimator | egress_canary | audit_failed | state_store | state_lost | chain_lost);
 //	state_created — якорь: роутер создал хранилище состояния при пустой цепочке (Reason: store_created;
 //	  From/To — профили primary/fallback); после него цепочка непуста, и потеря хранилища обнаруживается;
 //	router_resumed — остановка снята оператором (Initiator.Kind == human).
@@ -124,7 +124,7 @@ func (e *RouterEvent) Validate() error {
 		}
 	case "router_halted":
 		switch e.Reason {
-		case "auth", "estimator", "audit_failed", "state_store", "state_lost", "chain_lost":
+		case "auth", "estimator", "egress_canary", "audit_failed", "state_store", "state_lost", "chain_lost":
 		default:
 			bad("reason: %q недопустима для router_halted", e.Reason)
 		}

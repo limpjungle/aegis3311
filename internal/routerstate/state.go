@@ -31,7 +31,7 @@ type Failover struct {
 	Fallback   EndpointState `json:"fallback"`
 	Active     string        `json:"active"` // "" | primary | fallback (как Router.active)
 	Halted     bool          `json:"halted"`
-	HaltReason string        `json:"halt_reason"` // "" | auth | estimator | audit_failed | state_store | state_lost | chain_lost
+	HaltReason string        `json:"halt_reason"` // "" | auth | estimator | egress_canary | audit_failed | state_store | state_lost | chain_lost
 }
 
 type Intent struct {
@@ -172,7 +172,7 @@ func validFailover(f *Failover) error {
 		return invalid("halted и halt_reason не согласованы")
 	}
 	switch f.HaltReason {
-	case "", "auth", "estimator", "audit_failed", "state_store", "state_lost", "chain_lost":
+	case "", "auth", "estimator", "egress_canary", "audit_failed", "state_store", "state_lost", "chain_lost":
 	default:
 		return invalid("halt_reason %q", f.HaltReason)
 	}

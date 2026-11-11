@@ -5,16 +5,24 @@
 # Только для стенда: CA и PGP-ключи одноразовые, секреты фиктивные. Доли и токены не печатаются и не пишутся на диск
 # в открытом виде; ввод долей — через stdin, токен — первой строкой stdin (не в argv).
 #
-#   ./run-ha.sh          поднять стенд и прогнать проверки
-#   ./run-ha.sh down     удалить release, PVC и namespace openbao-ha (профиль minikube остаётся)
+#   ./run-ha.sh              поднять стенд и прогнать проверки
+#   ./run-ha.sh down         удалить release, PVC и namespace openbao-ha (профиль minikube остаётся)
+#   ./run-ha.sh cilium       то же на отдельном профиле с Cilium (aegis-vault-cilium) под политиками deploy/vault/network и deploy/intake:
+#                            namespace OpenBao — из vault.address агента (vault); политики применяются до установки чарта; плюс сетевые проверки
+#   ./run-ha.sh cilium-down  удалить профиль aegis-vault-cilium
 # Состояние (зашифрованный ответ init) — в ${XDG_RUNTIME_DIR:-$HOME/.cache}/aegis-vault-dev/openbao-ha, не в репозитории.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 vault_dir=$(cd "$here/.." && pwd)
+mode=${1:-}
 cluster=aegis-vault-dev
 ctx=$cluster
 ns=openbao-ha
+if [ "${mode#cilium}" != "$mode" ]; then
+  cluster=aegis-vault-cilium; ctx=$cluster
+  ns=$(jq -r '.vault.address | capture("^https://[^.]+\\.(?<ns>[^.]+)\\.svc").ns' "$vault_dir/agent/aegis-intake.json")
+fi
 image=openbao/openbao:2.7.2; cli=bao
 digest=$(grep -A1 '^  openbao)' "$here/run.sh" | grep -oE 'sha256:[0-9a-f]{64}' | head -n1)
 chart_ver=0.30.7
@@ -23,18 +31,23 @@ addr="https://openbao-active.$ns.svc:8200"   # active-сервис: попада
 sealed_re='EOF|sealed|503|connection refused|no route to host'
 noquorum_re=$sealed_re
 state=${XDG_RUNTIME_DIR:-$HOME/.cache}/aegis-vault-dev/openbao-ha
+[ "$mode" = cilium ] && state=${XDG_RUNTIME_DIR:-$HOME/.cache}/aegis-vault-dev/openbao-ha-cilium
 source "$here/lib.sh"
 
-if [ "${1:-}" = down ]; then
-  helm uninstall openbao -n "$ns" --kube-context "$ctx" --wait >/dev/null 2>&1 || true
-  k delete ns "$ns" --ignore-not-found --wait >/dev/null
-  rm -rf "$state"; exit 0
-elif [ -n "${1:-}" ]; then
-  echo "использование: $0 [down]" >&2; exit 2
-fi
+case "$mode" in
+  ""|cilium) ;;
+  down)
+    helm uninstall openbao -n "$ns" --kube-context "$ctx" --wait >/dev/null 2>&1 || true
+    k delete ns "$ns" --ignore-not-found --wait >/dev/null
+    rm -rf "$state"; exit 0 ;;
+  cilium-down)
+    minikube delete -p "$cluster" >/dev/null 2>&1 || true
+    rm -rf "${XDG_RUNTIME_DIR:-$HOME/.cache}/aegis-vault-dev/openbao-ha-cilium"; exit 0 ;;
+  *) echo "использование: $0 [down|cilium|cilium-down]" >&2; exit 2 ;;
+esac
 
 work=$(mktemp -d)
-trap 'GNUPGHOME="$work/gnupg" gpgconf --kill gpg-agent 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'GNUPGHOME="$work/gnupg" gpgconf --kill gpg-agent 2>/dev/null || true; [ -z "${pf:-}" ] || kill "$pf" 2>/dev/null || true; rm -rf "$work"' EXIT
 umask 077
 rm -rf "$state"; mkdir -p -m 700 "$state"; chmod 700 "${state%/*}"
 
@@ -157,10 +170,90 @@ hold_ok() { # $1 — подпись шага
   [ "$ph" = Running ] && [ "$rc" = 0 ] && pass "$1: intake-long Running, restartCount 0" || fail "$1: intake-long фаза $ph, restartCount '$rc'"
 }
 
+# --- сетевые проверки под политиками (режим cilium) ----------------------------------------------------------------
+# TCP по IP пода: 0 — соединение есть, 1 — нет, 2 — сбой kubectl exec (ошибка стенда, а не результат проверки).
+nc_try() { # $1 ns, $2 под, $3 IP, $4 порт
+  local out
+  out=$(k -n "$1" exec "$2" -- sh -c "nc -z -w 3 $3 $4 >/dev/null 2>&1; echo rc=\$?" 2>/dev/null) || return 2
+  case "$out" in rc=0) return 0 ;; rc=[1-9]*) return 1 ;; *) return 2 ;; esac
+}
+expect_nc() { # $1 — conn | noconn, $2 — описание, остальное — аргументы nc_try
+  local want=$1 desc=$2 rc=0; shift 2
+  nc_try "$@" || rc=$?
+  case "$rc:$want" in
+    0:conn|1:noconn) pass "$desc" ;;
+    2:*) fail "стенд: exec не выполнился: $desc" ;;
+    *) fail "$desc: ожидалось $want" ;;
+  esac
+}
+np_pod() { # $1 ns, $2 имя, $3 метка app (или "-"), $4 команда
+  local labels=""
+  [ "$3" = - ] || labels=", labels: {app: $3}"
+  k apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: $2, namespace: $1$labels}
+spec:
+  terminationGracePeriodSeconds: 0
+  containers:
+    - {name: bb, image: $busybox, imagePullPolicy: IfNotPresent, command: [sh, -c, "$4"]}
+EOF
+}
+np_checks() {
+  echo "== сетевые политики (Cilium $cilium_ver)"
+  local i ok=1 n ready
+  for i in $(seq 1 30); do
+    ok=1
+    for n in 0 1 2; do
+      ready=$(k -n "$ns" get pod "openbao-$n" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+      [ "$ready" = True ] || ok=0
+    done
+    [ "$ok" = 1 ] && break; sleep 2
+  done
+  [ "$ok" = 1 ] && pass "readiness под политиками: 3 пода Ready" || fail "readiness под политиками: не все поды Ready"
+  k get ns nettest >/dev/null 2>&1 || k create ns nettest >/dev/null
+  np_pod aegis-system np-intake aegis-intake "sleep 1d"
+  np_pod nettest np-probe - "sleep 1d"
+  np_pod nettest np-fake-intake aegis-intake "sleep 1d"
+  np_pod nettest np-target - "mkdir -p /w; echo ok >/w/index.html; httpd -p 8080 -h /w; sleep 1d"
+  k -n aegis-system wait --for=condition=Ready pod/np-intake --timeout=120s >/dev/null
+  k -n nettest wait --for=condition=Ready pod --all --timeout=120s >/dev/null
+  wait_cilium_ready k8s:app=aegis-intake || fail "стенд: endpoint intake не готов"
+  sleep 5
+  local ob_ip target_ip
+  ob_ip=$(k -n "$ns" get pod openbao-0 -o jsonpath='{.status.podIP}')
+  target_ip=$(k -n nettest get pod np-target -o jsonpath='{.status.podIP}')
+  expect_nc conn "intake (app=aegis-intake) -> openbao-0:8200 разрешён" aegis-system np-intake "$ob_ip" 8200
+  expect_nc noconn "intake -> openbao-0:8201 (Raft) запрещён" aegis-system np-intake "$ob_ip" 8201
+  expect_nc noconn "np-probe (nettest, без политик) -> openbao-0:8200 запрещён" nettest np-probe "$ob_ip" 8200
+  expect_nc noconn "np-fake-intake (app=aegis-intake в чужом namespace) -> openbao-0:8200 запрещён" nettest np-fake-intake "$ob_ip" 8200
+  expect_nc conn "контроль: np-probe -> np-target:8080 доступен" nettest np-probe "$target_ip" 8080
+  # Egress самого OpenBao: чужой под недоступен, внешние имена получают REFUSED.
+  if k -n "$ns" exec openbao-0 -c openbao -- sh -c 'command -v nc && command -v nslookup' >/dev/null 2>&1; then
+    expect_nc noconn "egress openbao-0 -> np-target:8080 запрещён" "$ns" openbao-0 "$target_ip" 8080
+    local ns_out
+    ns_out=$(k -n "$ns" exec openbao-0 -c openbao -- nslookup example.com 2>&1 || true)
+    grep -q REFUSED <<<"$ns_out" && pass "egress openbao-0: example.com -> REFUSED" || fail "egress openbao-0: example.com не REFUSED: $(head -n 3 <<<"$ns_out" | tr '\n' ' ')"
+  else
+    skip "egress openbao-0: в образе нет nc или nslookup"
+  fi
+  # kubectl port-forward идёт через kubelet в netns пода (loopback) и NetworkPolicy не подчиняется: контроль — RBAC.
+  k -n "$ns" port-forward pod/openbao-0 18200:8200 >/dev/null 2>&1 & pf=$!
+  local h=""
+  for i in $(seq 1 10); do
+    h=$(curl -sS --max-time 3 --cacert "$tls/ca.pem" https://127.0.0.1:18200/v1/sys/health 2>/dev/null) || h=""
+    jq -e 'has("initialized")' >/dev/null 2>&1 <<<"$h" && break; sleep 1
+  done
+  jq -e 'has("initialized")' >/dev/null 2>&1 <<<"$h" && pass "port-forward под политиками работает (через kubelet, вне NetworkPolicy; контроль — RBAC)" || fail "port-forward под политиками не работает"
+  kill "$pf" 2>/dev/null || true; wait "$pf" 2>/dev/null || true; pf=""
+  k -n aegis-system delete pod np-intake --wait=false >/dev/null
+  k delete ns nettest --wait=false >/dev/null
+}
+
 echo "== openbao-ha ($image, TLS, Raft 3, Shamir 3/2)"
 
 # --- кластер, TLS и сервер -------------------------------------------------------------------------------------
-start_cluster
+if [ "$mode" = cilium ]; then start_cluster_cilium; else start_cluster; fi
 load_images "$image" "$digest"
 helm repo add openbao https://openbao.github.io/openbao-helm >/dev/null 2>&1 || true
 helm uninstall openbao -n "$ns" --kube-context "$ctx" --wait >/dev/null 2>&1 || true   # PVC держатся подами, пока те не удалены
@@ -168,6 +261,8 @@ k get ns "$ns" >/dev/null 2>&1 || k create ns "$ns" >/dev/null
 k -n "$ns" delete pvc --all --wait --timeout=120s >/dev/null
 k get ns aegis-system >/dev/null 2>&1 || k create ns aegis-system >/dev/null
 k -n aegis-system get sa aegis-intake >/dev/null 2>&1 || k -n aegis-system create sa aegis-intake >/dev/null
+# Режим cilium: политики из Git действуют до установки чарта — OpenBao поднимается и работает уже под ними.
+[ "$mode" = cilium ] && apply_netpols "$vault_dir/network" "$vault_dir/../intake"
 
 # Одноразовый CA и серверный сертификат (в бою — cert-manager или внутренний CA).
 tls="$work/tls"; mkdir "$tls"
@@ -276,7 +371,7 @@ k -n aegis-system delete pod perms --ignore-not-found --wait >/dev/null
 k -n aegis-system apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Pod
-metadata: {name: perms, namespace: aegis-system}
+metadata: {name: perms, namespace: aegis-system, labels: {app: aegis-intake}}
 spec:
   serviceAccountName: aegis-intake
   automountServiceAccountToken: false
@@ -309,6 +404,7 @@ for p in "read aegis-kv/data/mvp-a/other" "kv put aegis-kv/mvp-a/intake/openrout
   grep -qx "denied $p" <<<"$permsout" && pass "по TLS: permission denied: $p" || fail "по TLS: должно быть denied: $p"
 done
 k -n aegis-system delete pod perms --wait=false >/dev/null
+[ "$mode" != cilium ] || np_checks
 
 # 6. Отзыв root: root-токен больше не работает; дальше — оператор стенда.
 bao_pod 0 token revoke -self >/dev/null 2>&1 || true   # токен пока в $tok (root)

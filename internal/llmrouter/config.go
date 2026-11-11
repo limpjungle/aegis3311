@@ -65,6 +65,7 @@ type Options struct {
 	Failover FailoverConfig
 	RouterID string            // initiator событий: system/<RouterID>
 	State    routerstate.Store // обязателен: бюджеты и состояние failover переживают рестарт
+	Canary   *CanarySet        // nil — проверка исходящих запросов на canary-маркеры выключена
 }
 
 // ErrStateStore — хранилище состояния недоступно: роутер остановлен (halted, state_store).
@@ -84,6 +85,8 @@ type Router struct {
 	halted     bool
 	haltReason string
 	pins       map[string]Role
+
+	canaryBlocked atomic.Uint64 // запросов, остановленных canary-маркером, с момента старта
 
 	stopGate atomic.Pointer[func() bool] // kill switch: true — запросы в hybrid не уходят (см. SetStopGate)
 }

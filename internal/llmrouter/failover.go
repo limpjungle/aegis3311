@@ -36,12 +36,16 @@ type State struct {
 	Halted     bool
 	HaltReason string
 	Endpoints  map[string]string // профиль → up | down | quarantined
+	// CanaryMarkers — число маркеров в проверке (0 — выключена); CanaryBlocked — запросов, остановленных маркером, с момента старта.
+	CanaryMarkers int
+	CanaryBlocked uint64
 }
 
 func (r *Router) State() State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := State{Active: r.activeName(), Halted: r.halted, HaltReason: r.haltReason, Endpoints: map[string]string{}}
+	s := State{Active: r.activeName(), Halted: r.halted, HaltReason: r.haltReason, Endpoints: map[string]string{},
+		CanaryMarkers: r.o.Canary.Len(), CanaryBlocked: r.canaryBlocked.Load()}
 	for _, ep := range r.eps {
 		s.Endpoints[ep.profile.Name] = string(ep.state)
 	}
@@ -214,7 +218,7 @@ func (r *Router) transition(ep *endpoint, to epState, reason string, failures in
 	return r.recompute(reason)
 }
 
-// halt останавливает роутер: аккаунт общий (auth) или оценка токенов разошлась с фактом (estimator).
+// halt останавливает роутер: аккаунт общий (auth), оценка токенов разошлась с фактом (estimator) или в запросе найден canary (egress_canary).
 func (r *Router) halt(reason string) error {
 	if r.halted {
 		return nil
@@ -276,6 +280,13 @@ func (r *Router) quarantine(ep *endpoint) error {
 		return nil
 	}
 	return r.transition(ep, epQuarantined, "provider_mismatch", 0, 0)
+}
+
+// haltCanary: в теле запроса найден canary-маркер — маскировщик пропустил данные, которые не должны уходить наружу.
+func (r *Router) haltCanary() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.halt("egress_canary")
 }
 
 func (r *Router) haltEstimator() error {

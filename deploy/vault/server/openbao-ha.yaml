@@ -1,0 +1,96 @@
+# Боевые values Helm-чарта openbao/openbao 0.30.7: Raft на 3 узлах, TLS, Shamir 3/2 (решение — identity-secrets-mvp-a.md §9).
+# Сертификат сервера кладёт в Secret `openbao-tls` (tls.crt, tls.key, ca.crt) внешний выпуск (cert-manager или внутренний CA);
+# стенд делает это сам: dev/run-ha.sh. Образ закреплён по digest (тот же, что в dev/run.sh).
+global:
+  tlsDisable: false
+injector:
+  enabled: false
+csi:
+  enabled: false
+ui:
+  enabled: false
+server:
+  image:
+    registry: docker.io
+    repository: openbao/openbao
+    tag: "2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
+    pullPolicy: IfNotPresent
+  dev:
+    enabled: false
+  authDelegator:
+    enabled: true
+  # Поды обновляются вручную по одному: после каждого пода нужен unseal кворумом.
+  updateStrategyType: OnDelete
+  # Все три пода создаются сразу: при Shamir первый под не станет Ready до unseal, и OrderedReady не создал бы остальные.
+  podManagementPolicy: Parallel
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ template "openbao.name" . }}
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+  dataStorage:
+    enabled: true
+  auditStorage:
+    enabled: true
+  extraVolumes:
+    - type: secret
+      name: openbao-tls
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/userconfig/openbao-tls/ca.crt
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = false
+        disable_mlock = true
+
+        listener "tcp" {
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file   = "/openbao/userconfig/openbao-tls/tls.crt"
+          tls_key_file    = "/openbao/userconfig/openbao-tls/tls.key"
+          tls_min_version = "tls12"
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+          retry_join {
+            leader_api_addr     = "https://openbao-0.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://openbao-1.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://openbao-2.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+        }
+
+        service_registration "kubernetes" {}
+
+        # Блока seal нет: Shamir, решение — identity-secrets-mvp-a.md §9.
+
+        # Audit device объявлены в конфигурации: создание через API закрыто (CVE-2025-54997).
+        audit "file" "file" {
+          options {
+            file_path = "/openbao/audit/audit.log"
+          }
+        }
+        # В бою stdout собирает сборщик логов в SIEM.
+        audit "file" "stdout" {
+          options {
+            file_path = "stdout"
+          }
+        }
+    disruptionBudget:
+      enabled: true
+      maxUnavailable: 1

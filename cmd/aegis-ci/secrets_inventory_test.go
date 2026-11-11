@@ -407,6 +407,9 @@ func intakePaths(t *testing.T) map[string]bool {
 
 func TestVaultPolicyLeastPrivilege(t *testing.T) {
 	for _, f := range vaultFiles(t, "policies") {
+		if stem(f) == bgInitPolicy {
+			continue // политика токена-инициатора break-glass — не intake; проверяется TestBreakGlassInitiatorPolicy
+		}
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

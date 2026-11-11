@@ -47,6 +47,12 @@ jobs:
         run: go build ./...
       - name: Тесты
         run: go test ./...
+      - name: Стенд netpol, синтаксис и классификатор curl
+        run: |
+          bash -n deploy/intake/dev/run-netpol.sh
+          bash -n deploy/intake/dev/curl-verdict.sh
+          bash -n deploy/intake/dev/curl-verdict-test.sh
+          bash deploy/intake/dev/curl-verdict-test.sh
 
   race:
     runs-on: ubuntu-latest
@@ -58,8 +64,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # Полный -race ./... ~5 мин (llmrouter, masker, pep); здесь — пакеты с горутинами на пути intake, аудита и роутера.
       - name: Тесты с детектором гонок
-        run: go test -race ./internal/killswitch/... ./internal/intake/... ./internal/promtext/ ./cmd/aegis-intake/ ./cmd/aegis-killswitch/
+        run: go test -race ./internal/killswitch/... ./internal/intake/... ./internal/promtext/ ./internal/audit/... ./internal/routersvc/ ./cmd/aegis-intake/ ./cmd/aegis-killswitch/
 
   eval:
     runs-on: ubuntu-latest

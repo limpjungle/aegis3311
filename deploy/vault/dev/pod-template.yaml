@@ -1,10 +1,13 @@
 # Под по фрагменту intake-deploy.md («Секреты: Vault Agent»); вместо intake — busybox, читающий файлы секретов
-# под тем же runAsUser. Плейсхолдеры подставляет run.sh: __NAME__, __AGENT_IMAGE__, __CLI__.
+# под тем же runAsUser. Плейсхолдеры подставляет lib.sh: __NAME__, __AGENT_IMAGE__, __CLI__, __HOLD__ (секунд, сколько intake
+# остаётся запущенным после проверки; 0 — сразу завершается).
 apiVersion: v1
 kind: Pod
 metadata:
   name: __NAME__
   namespace: aegis-system
+  labels:
+    app: aegis-intake   # метка нужна для сетевых политик (режим cilium в run-ha.sh)
 spec:
   serviceAccountName: aegis-intake
   automountServiceAccountToken: false
@@ -18,6 +21,7 @@ spec:
       volumeMounts:
         - {name: vault-token, mountPath: /var/run/secrets/vault, readOnly: true}
         - {name: vault-config, mountPath: /vault/config, readOnly: true}
+        - {name: vault-ca, mountPath: /vault/ca, readOnly: true}
         - {name: secrets, mountPath: /vault/secrets}
   containers:
     - name: intake
@@ -36,6 +40,7 @@ spec:
           done
           [ ! -e /var/run/secrets/vault ] && echo "ok: токена vault в контейнере intake нет"
           [ ! -e /var/run/secrets/kubernetes.io ] && echo "ok: токена SA по умолчанию нет"
+          sleep __HOLD__
       securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
       volumeMounts:
         - {name: secrets, mountPath: /vault/secrets, readOnly: true}
@@ -46,3 +51,4 @@ spec:
       projected:
         sources: [{serviceAccountToken: {audience: vault, expirationSeconds: 600, path: token}}]
     - {name: vault-config, configMap: {name: aegis-intake-vault-agent}}
+    - {name: vault-ca, configMap: {name: vault-ca, optional: true}}

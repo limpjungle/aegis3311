@@ -37,6 +37,16 @@ class TestValidateFormats(unittest.TestCase):
     def test_v2_enum_checked(self):
         self.assertTrue(score.validate(ans(a_type="workload.restart", params={"scope": "cluster"})))
 
+    def test_enum_fields_reject_non_string_values(self):
+        for field in ("incident_class", "root_cause", "action.type"):
+            with self.subTest(field=field):
+                answer = ans()
+                if field == "action.type":
+                    answer["action"]["type"] = {}
+                else:
+                    answer[field] = []
+                self.assertIn(f"{field} not in enum", score.validate(answer))
+
 
 class TestDecisionAgreement(unittest.TestCase):
     def setUp(self):

@@ -1,0 +1,10 @@
+{
+  "path": {
+    "sys/generate-root-token/attempt": {"capabilities": ["create", "read", "update"]},
+    "sys/generate-root-token/update": {"capabilities": ["update"]},
+    "sys/rotate/root/init": {"capabilities": ["create", "read", "update"]},
+    "sys/rotate/root/update": {"capabilities": ["update"]},
+    "auth/token/lookup-self": {"capabilities": ["read"]},
+    "auth/token/renew-self": {"capabilities": ["update"]}
+  }
+}

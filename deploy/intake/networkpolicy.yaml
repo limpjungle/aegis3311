@@ -1,0 +1,34 @@
+# T-17: default-deny в namespace aegis-system и ingress метрик intake.
+# Требуется Cilium: весь egress intake — CiliumNetworkPolicy в cilium-egress.yaml.
+# Egress-правил здесь нет намеренно: L4-разрешение kube-dns:53 из этой политики слилось бы (union) с L7-правилом DNS
+# в CNP и сняло бы фильтр имён (защиту от DNS-туннеля).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegis-system-default-deny
+  namespace: aegis-system
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegis-intake-metrics
+  namespace: aegis-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aegis-intake
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9464
+          protocol: TCP

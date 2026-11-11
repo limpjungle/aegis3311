@@ -15,6 +15,8 @@ const (
 	denyServiceDay = "budget_service_day"
 	// denyStateStore — резерв не записан в хранилище состояния: запрос не отправляется (fail-closed).
 	denyStateStore = "state_store"
+	// denyHalted — роутер остановлен после выбора endpoint'а (параллельный halt): попытка не отправляется.
+	denyHalted = "halted"
 )
 
 const dayFormat = "2006-01-02"
@@ -81,6 +83,11 @@ type pairReserver struct {
 	mu                sync.Mutex
 	denied            string
 	storeErr          error
+	// gate: true — роутер остановлен; nil — без проверки (юнит-тесты бюджета). Проверяется перед каждой попыткой
+	// (Client.Call зовёт Reserve непосредственно перед Post) дважды: до блокировки бюджета и после записи резерва;
+	// при отказе на второй проверке резерв освобождается (Settle с нулём). Обе проверки вне b.mu. Остаточное окно:
+	// между второй проверкой и Post (несколько инструкций без I/O) и сам Post — r.mu нельзя держать на время Post.
+	gate func() bool
 }
 
 type hold struct {
@@ -100,7 +107,28 @@ func (p *pairReserver) deny(reason string, storeErr error) {
 	}
 }
 
+func (p *pairReserver) halted() bool { return p.gate != nil && p.gate() }
+
 func (p *pairReserver) Reserve(tokens int64, _ float64) (openrouter.Hold, bool) {
+	// gate берёт и отпускает r.mu вне b.mu: вложенности блокировок нет.
+	if p.halted() {
+		p.deny(denyHalted, nil)
+		return nil, false
+	}
+	h, ok := p.reserveAccounts(tokens)
+	if !ok {
+		return nil, false
+	}
+	// Остановка, пока ждали b.mu или писали резерв в store: резерв освобождается, запрос не уходит.
+	if p.halted() {
+		p.Settle(h, 0, 0) // сбой store → storeErr = settleError → route.go: haltStoreLocked (роутер уже остановлен)
+		p.deny(denyHalted, nil)
+		return nil, false
+	}
+	return h, true
+}
+
+func (p *pairReserver) reserveAccounts(tokens int64) (openrouter.Hold, bool) {
 	b := p.b
 	b.mu.Lock()
 	defer b.mu.Unlock()

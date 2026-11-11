@@ -1,0 +1,11 @@
+# T-36: default-deny в namespace OpenBao. Требуется Cilium: весь ingress и egress OpenBao — CiliumNetworkPolicy в cilium-openbao.yaml.
+# Egress-правил здесь нет намеренно: L4-разрешение kube-dns:53 из этой политики слилось бы (union) с L7-правилом DNS
+# в CNP и сняло бы фильтр имён. Порядок применения: сначала cilium-openbao.yaml, затем эта политика (иначе OpenBao окажется изолирован).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-default-deny
+  namespace: vault
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

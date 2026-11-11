@@ -61,15 +61,18 @@ def validate(ans):
     req = {"incident_class", "root_cause", "action", "confidence", "evidence", "summary"}
     if set(ans) != req:
         errs.append(f"keys mismatch: {sorted(set(ans) ^ req)}")
-    if ans.get("incident_class") not in CLASSES:
+    incident_class = ans.get("incident_class")
+    if not isinstance(incident_class, str) or incident_class not in CLASSES:
         errs.append("incident_class not in enum")
-    if ans.get("root_cause") not in ROOT_CAUSES:
+    root_cause = ans.get("root_cause")
+    if not isinstance(root_cause, str) or root_cause not in ROOT_CAUSES:
         errs.append("root_cause not in enum")
     act = ans.get("action")
     if not isinstance(act, dict) or set(act) != {"type", "params"}:
         errs.append("action must have exactly type and params")
         return errs
-    if act.get("type") not in ACTIONS:
+    action_type = act.get("type")
+    if not isinstance(action_type, str) or action_type not in ACTIONS:
         errs.append("action.type not in enum")
     params = act.get("params")
     types = None

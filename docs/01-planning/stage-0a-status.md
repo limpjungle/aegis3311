@@ -17,7 +17,7 @@
 | 5 | Базовый red-team RT-01…RT-08, RT-11, RT-18 | Тесты RT-01…RT-04, RT-07, RT-08 есть; формального прогона и отчёта нет | **Блокер shadow** |
 | 6 | Egress только через роутер (T-17, P1) | Манифесты [`deploy/intake/`](../../deploy/intake/): default-deny в `aegis-system` (NetworkPolicy), egress intake — CiliumNetworkPolicy (DNS с фильтром имён, OpenBao, Alertmanager, Prometheus, `kube-apiserver`, toFQDNs `openrouter.ai` и `storage.yandexcloud.net`); SNI (`serverNames`) на правилах `openrouter.ai` и `storage.yandexcloud.net`; ingress в OpenBao — [`deploy/vault/network/`](../../deploy/vault/network/); тесты `TestIntakeNetworkPolicy`, `TestOpenBaoNetworkPolicy`; стенды `run-netpol.sh` (54 PASS, 0 провалов; `internet` — 2 SKIP) и `run-ha.sh cilium` (61 PASS, 0 провалов) — 11.11.2026, Cilium 1.20.4. В бою не применено: нужен кластер с Cilium ≥ 1.13 | Высокая |
 | 7 | Kill switch: стенд и учение G0 | Код и [runbook учения](../04-operations/kill-switch-drill.md) готовы | Высокая (критерий выхода G0; стенд нужен до shadow) |
-| 8 | Подпись артефактов: SBOM, cosign, SLSA (plan.md §0a п. 11) | `release.yml` готов (SBOM CycloneDX 1.5, провенанс SLSA, аттестация SBOM); не запускался; образов нет | Высокая |
+| 8 | Подпись артефактов (plan.md §0a п. 11) | [Первый прогон `release`](https://github.com/limpjungle/aegis3311/actions/runs/42839402165) прошёл 10.11.2026. В [`v0.1.0`](https://github.com/limpjungle/aegis3311/releases/tag/v0.1.0) опубликованы пять бинарников Linux amd64, SBOM CycloneDX 1.5 и `SHA256SUMS`. Workflow выпустил SLSA-аттестации происхождения и аттестации SBOM. Подпись cosign запланирована при выпуске контейнерных образов. | Высокая для контейнерных образов |
 | 9 | Runbook-каталог и индексация для LLM (plan.md §0a п. 12) | Таблица в [runbooks.md](../04-operations/runbooks.md); модель работает без RAG | Средняя (T-20 — P1, если появится RAG) |
 | 10 | Gate G(−1): DPA с OpenRouter (ZDR), legal, DPIA, инвентаризация ПДн | Из репозитория не видно | **Блокер** (организационный) |
 | 11 | Eval по реальным данным | Только синтетика | Средняя для 0a, высокая для G0 |
@@ -78,7 +78,7 @@
 | 2 | Отдельная пара S3-ключей для выгрузки checkpoint'ов: `PutObject`, `GetObject(Version)`, `ListBucketVersions`, без Delete (`AEGIS_AUDIT_S3_*_FILE`) | **Блокер shadow** | Bucket |
 | 3 | ~~Ключ подписи policy bundle офлайн → секрет environment `policy-signing`; ключи в `deploy/policy-bundle/keys.json`~~ Сделано 09.11.2026: секрет `POLICY_BUNDLE_SIGNING_KEY` создан (ключ перевыпущен: первый вариант приватного ключа попал в лог сессии), открытые ключи `ci-policy-signing.pub` и `break-glass.pub` в `deploy/policy-bundle/keys/`; break-glass зашифрован и разнесён на двух хранителей. В `main` вошли через [PR №1](https://github.com/limpjungle/aegis3311/pull/1) | Решено | — |
 | 7 | Ключи дежурных и двух renewer kill switch | Высокая | — |
-| 8 | Ключ и environment `release` | Высокая | п. 3 |
+| 8 | ~~Настроить подпись бинарного релиза~~ Сделано в `v0.1.0`: публикация через environment `release`, аттестации подписаны через OIDC GitHub Actions и Sigstore. | Решено для бинарников | — |
 
 ### Настройки GitHub и конфигурация
 
@@ -91,7 +91,7 @@
 | 3 | ~~Genesis-bundle (`workflow_dispatch`, `genesis=true`)~~ Сделано 10.11.2026: опубликованы [policy-bundle-1](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-1) и [policy-bundle-2](https://github.com/limpjungle/aegis3311/releases/tag/policy-bundle-2) | Решено | — |
 | 3 | `policy_bundle.required: true` у intake. В коде 11.11.2026: обязательна для prod-окружений; осталось включить на стенде и увидеть `policy_bundle_verified` ([runbook](../04-operations/policy-bundle-stand.md)) | **Блокер shadow** | Genesis |
 | 2 | Секция `audit.anchor` в конфигурации intake на стенде | **Блокер shadow** | Bucket, ключи |
-| 8 | Первый прогон `release` на GitHub, сверить входы actions v7/v8 | Высокая | Environment `release` |
+| 8 | ~~Первый прогон `release` на GitHub~~ Сделано 10.11.2026: сборка, аттестации и публикация прошли в [прогоне `v0.1.0`](https://github.com/limpjungle/aegis3311/actions/runs/42839402165). | Решено | — |
 
 ### Код
 
@@ -106,7 +106,7 @@
 
 ## Предлагаемый порядок
 
-1. CI и четыре глаза (п. 3 и п. 8): подтвердить `required: true` на стенде, пройти RT-11 и проверить публикацию бинарного релиза.
+1. Четыре глаза (п. 3): подтвердить `required: true` на стенде и пройти RT-11.
 2. Аудит в KMS и WORM (п. 2): WORM в коде готов (09.11.2026); выбор KMS и подписант, срок хранения, bucket и ключи, прогон на живом bucket'е.
 3. Формальный red-team (п. 5) по готовым сценариям — после п. 2–3.
 4. Развёртывание Vault и RT-18 (п. 4): решение принято 09.11.2026, SPIRE — в MVP-B.

@@ -19,7 +19,9 @@
 // Policy bundle (threat-model T-24): serve и replay (без -prepare-only) читают подписанный bundle из policy_bundle.path,
 // проверяют подпись ключами policy_bundle.keys (ed25519), одобрения (не меньше двух разных людей, не автор, не меньше двух
 // групп) и совпадение файлов политик, каталога и eval-ассетов LLM со встроенными в бинарь (журнал policy_bundle_verified).
-// Секции нет — проверка выключена (предупреждение policy_bundle_missing); required=false — отказ проверки только
+// В prod-окружениях (prod-cloud-hybrid, prod-baremetal) секция
+// и required=true обязательны: иначе код 2 как ошибка конфигурации. В staging: секции нет — проверка выключена
+// (предупреждение policy_bundle_missing); required=false — отказ проверки только
 // предупреждает (policy_bundle_unverified); required=true — отказ проверки означает код 2 до приёма инцидентов. Ключ аудита
 // и ключи kill switch в keyring bundle входить не должны (код 2 при любом required).
 //
@@ -36,7 +38,7 @@
 // Конфигурация — intake.Config (JSON, без секретов); пример и допущения окружения — docs/04-operations/intake-deploy.md.
 //
 // Коды выхода: 0 — успех; 1 — fail-closed (store, цепочка, аудит или состояние intake отказали или повреждены);
-// 2 — ошибка аргументов, конфигурации или окружения (в том числе занятый metrics_listen и отказ проверки policy bundle при required=true); 3 — файлы заняты работающим процессом.
+// 2 — ошибка аргументов, конфигурации или окружения (в том числе занятый metrics_listen и отказ проверки policy bundle при required=true, prod-окружение без policy_bundle с required=true); 3 — файлы заняты работающим процессом.
 package main
 
 import (
@@ -239,7 +241,7 @@ func loadPolicyBundle(cfg intake.Config, sec routersvc.Secrets, ksKeys killswitc
 // ключей — ошибка всегда. Дайджесты загруженных каталога и политик сверяются с манифестом.
 func checkPolicyBundle(cfg intake.Config, sec routersvc.Secrets, ksKeys killswitch.Keyring, cat *catalog.Catalog, pol *policyengine.Engine, lg *slog.Logger) error {
 	if cfg.PolicyBundle == nil {
-		lg.Warn("policy_bundle_missing", "hint", "проверка подписанного bundle выключена: политики не подтверждены четырьмя глазами (stage-0a-status п. 3)")
+		lg.Warn("policy_bundle_missing", "hint", "проверка подписанного bundle выключена (возможно только в staging): политики не подтверждены четырьмя глазами (stage-0a-status п. 3)")
 		return nil
 	}
 	v, err := loadPolicyBundle(cfg, sec, ksKeys)

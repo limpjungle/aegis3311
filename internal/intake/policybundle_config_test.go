@@ -1,6 +1,9 @@
 package intake
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func pb(m map[string]any) map[string]any { return m["policy_bundle"].(map[string]any) }
 
@@ -9,7 +12,7 @@ func okBundleSection() map[string]any {
 		"keys": []any{map[string]any{"path": "/etc/aegis/keys/policy-ci-1.pub", "issuer": "ci/policy-signing"}}}
 }
 
-// Секция policy_bundle необязательна; если есть — проверяется форма.
+// Вне prod-окружений секция policy_bundle необязательна; если есть — проверяется форма.
 func TestConfigPolicyBundle(t *testing.T) {
 	c, err := parse(t, miniConfig())
 	if err != nil || c.PolicyBundle != nil {
@@ -45,5 +48,39 @@ func TestConfigPolicyBundle(t *testing.T) {
 		if _, err := parse(t, m); err == nil {
 			t.Errorf("%s: принято", name)
 		}
+	}
+}
+
+// В prod-окружениях секция обязательна и required=true (T-24); в staging — двухшаговое включение.
+func TestConfigPolicyBundleRequiredInProd(t *testing.T) {
+	for _, env := range []string{"prod-cloud-hybrid", "prod-baremetal"} {
+		t.Run(env, func(t *testing.T) {
+			m := miniConfig()
+			m["environment"] = env
+			if _, err := parse(t, m); err == nil || !strings.Contains(err.Error(), "required") {
+				t.Errorf("без секции: %v", err)
+			}
+			m["policy_bundle"] = okBundleSection()
+			if _, err := parse(t, m); err == nil || !strings.Contains(err.Error(), "required") {
+				t.Errorf("required=false: %v", err)
+			}
+			pb(m)["required"] = true
+			if _, err := parse(t, m); err != nil {
+				t.Errorf("required=true: %v", err)
+			}
+			pb(m)["keys"].([]any)[0].(map[string]any)["path"] = "/etc/aegis/ks/a.pub.pem"
+			if _, err := parse(t, m); err == nil {
+				t.Error("ключ kill switch принят при required=true")
+			}
+		})
+	}
+	m := miniConfig()
+	m["environment"] = "staging"
+	if _, err := parse(t, m); err != nil {
+		t.Errorf("staging без секции: %v", err)
+	}
+	m["policy_bundle"] = okBundleSection()
+	if _, err := parse(t, m); err != nil {
+		t.Errorf("staging, required=false: %v", err)
 	}
 }

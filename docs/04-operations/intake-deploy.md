@@ -249,7 +249,7 @@ aegis_sessions_by_state:
     "configmap": {"namespace": "aegisops-control", "name": "kill-switch"},
     "oob": {"endpoint": "https://storage.yandexcloud.net", "region": "ru-central1", "bucket": "aegis3311-kill-switch", "key": "kill-switch.json", "path_style": true, "ca_file": ""}
   },
-  "policy_bundle": {"path": "/etc/aegis/policy-bundle.json", "required": false, "keys": [{"path": "/etc/aegis/keys/policy-ci-1.pub", "issuer": "ci/policy-signing"}]},
+  "policy_bundle": {"path": "/etc/aegis/policy-bundle.json", "required": true, "keys": [{"path": "/etc/aegis/keys/ci-policy-signing.pub", "issuer": "ci/policy-signing"}, {"path": "/etc/aegis/keys/break-glass.pub", "issuer": "ci/break-glass"}]},
   "services": [
     {"namespace": "shop", "service": "geo-svc", "workload": {"kind": "Rollout", "name": "geo-svc"},
      "autoscaler": {"kind": "HorizontalPodAutoscaler", "name": "geo-svc"}, "declared_min": 2,
@@ -303,15 +303,16 @@ aegis_sessions_by_state:
 }
 ```
 
-**`policy_bundle` (необязательная секция).** Подписанный policy bundle подтверждает, что политики, каталог и eval-ассеты LLM, встроенные в бинарь, одобрены двумя людьми из разных групп ([ci-four-eyes.md](../07-governance/ci-four-eyes.md), T-24). `aegis-intake serve` и `replay` (без `-prepare-only`) при старте читают `path`, проверяют подпись ключами `keys` (ed25519), одобрения и совпадение файлов bundle со встроенными и пишут в журнал `policy_bundle_verified` (`sequence`, `commit`, `pr`, дайджесты). Поведение зависит от секции:
+**`policy_bundle` (обязательна в prod-окружениях, необязательна в staging).** Подписанный policy bundle подтверждает, что политики, каталог и eval-ассеты LLM, встроенные в бинарь, одобрены двумя людьми из разных групп ([ci-four-eyes.md](../07-governance/ci-four-eyes.md), T-24). `aegis-intake serve` и `replay` (без `-prepare-only`) при старте читают `path`, проверяют подпись ключами `keys` (ed25519), одобрения и совпадение файлов bundle со встроенными и пишут в журнал `policy_bundle_verified` (`sequence`, `commit`, `pr`, дайджесты). Поведение зависит от секции:
 
 | Конфигурация | Что делает intake |
 |---|---|
-| Секции нет | Запускается, в журнале `policy_bundle_missing`: политики не подтверждены четырьмя глазами |
+| Prod-окружение (`prod-cloud-hybrid`, `prod-baremetal`): секции нет или `required: false` | Код 2 на этапе разбора конфигурации, до чтения секретов (в том числе `collect`) |
+| Секции нет (staging) | Запускается, в журнале `policy_bundle_missing`: политики не подтверждены четырьмя глазами |
 | Секция есть, `required: false` | Bundle проверяется полностью; при ошибке — предупреждение `policy_bundle_unverified` (причина в `error`), работа продолжается |
 | Секция есть, `required: true` | Любая ошибка проверки — код 2 до приёма инцидентов |
 
-Ключи bundle не должны совпадать с ключом аудита и ключами kill switch: пересечение — код 2 при любом `required`. В примере `required: false`: пока нет ревьюеров и genesis-bundle, проверять нечего. Значение станет `true` после появления ревьюеров, применения настроек GitHub и первого подписанного bundle; шаг включения — в чек-листе [ci-four-eyes.md](../07-governance/ci-four-eyes.md) и в [migrations.md](migrations.md). Файл `policy-bundle.json` берётся из релиза `policy-bundle-N` (нужен тот, чьё содержимое совпадает со сборкой), открытый ключ — из `deploy/policy-bundle/keys.json` репозитория.
+Ключи bundle не должны совпадать с ключом аудита и ключами kill switch: пересечение — код 2 при любом `required`. В prod-окружениях секция обязательна и `required: true` (T-24, [stage-0a-status.md](../01-planning/stage-0a-status.md) п. 3); `collect` в prod тоже потребует секцию, потому что проверка конфигурации общая. В staging сохраняется двухшаговое включение: сначала `required: false` и ожидание `policy_bundle_verified` в журнале, затем `true` (чек-лист [ci-four-eyes.md](../07-governance/ci-four-eyes.md), порядок обновления — [migrations.md](migrations.md)). Ключи в примере соответствуют `deploy/policy-bundle/keys.json` (`ci/policy-signing` и `ci/break-glass`). Файл `policy-bundle.json` берётся из того же релиза `v*`, что и бинарь; для сборки не из релиза подходящий `policy-bundle-N` подбирается командой `go run ./cmd/aegis-ci bundle verify -in policy-bundle.json -keys deploy/policy-bundle/keys.json` из того же коммита, из которого собран бинарь (нужен тот, чьё содержимое совпадает со сборкой). Открытые ключи — из `deploy/policy-bundle/keys.json` репозитория. Процедура включения на стенде — [policy-bundle-stand.md](policy-bundle-stand.md).
 
 Поведение при пустом результате: в `metrics` запрос без серий даёт секцию без элементов (статус `empty`); в `db_queries` пустой вектор — ошибка (агрегаты неполны, `db.aggregates` критичен), поэтому запросы, у которых «нет данных» значит «ноль», заканчиваются на `or vector(0)`.
 
@@ -469,3 +470,4 @@ Default-deny (`aegis-system-default-deny`) закрывает ingress и egress 
    # контроль: то же с openrouter.ai (--resolve openrouter.ai:443:<IP_OR> https://openrouter.ai/) — tls>0.
    ```
 6. Канарейка: маркеры посажены в staging, `canary.markers_file` задан, метрика `aegis_intake_router_canary_markers` > 0; rollback floor зафиксирован, `aegis-audit version` везде показывает `chain_format 4`.
+7. Policy bundle: `required: true`, в журнале `policy_bundle_verified`, негативная проверка дала код 2 — [policy-bundle-stand.md](policy-bundle-stand.md).

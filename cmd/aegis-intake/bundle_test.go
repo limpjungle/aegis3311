@@ -208,3 +208,33 @@ func TestServePolicyBundleRequiredValid(t *testing.T) {
 		t.Errorf("лишние предупреждения:\n%s", log)
 	}
 }
+
+// В prod-окружении без секции или с required=false intake не запускается (код 2); с required=true и валидным bundle — да.
+func TestServePolicyBundleProdRequiresSection(t *testing.T) {
+	path, keys := bundletest.Write(t, t.TempDir())
+	for _, env := range []string{"prod-cloud-hybrid", "prod-baremetal"} {
+		for name, section := range map[string]map[string]any{
+			"нет секции":     nil,
+			"required=false": bundleSection(path, false, keys),
+		} {
+			t.Run(env+"/"+name, func(t *testing.T) {
+				s := newStack(t)
+				s.cfg["environment"] = env
+				s.setBundle(t, section)
+				code, log := s.serveFails(t)
+				if code != 2 || !strings.Contains(log, "required") {
+					t.Errorf("код %d:\n%s", code, log)
+				}
+				if len(s.killSwitchEvents(t)) != 0 || len(s.records(t)) != 0 {
+					t.Error("до отказа не должно быть событий и записей")
+				}
+			})
+		}
+	}
+	s := newStack(t)
+	s.cfg["environment"] = "prod-cloud-hybrid"
+	s.setBundle(t, bundleSection(path, true, keys))
+	if log := s.serveStarts(t); !strings.Contains(log, "policy_bundle_verified") {
+		t.Errorf("нет policy_bundle_verified:\n%s", log)
+	}
+}

@@ -1,0 +1,121 @@
+rule_files:
+  - audit-anchor.rules.yml
+evaluation_interval: 1m
+tests:
+  - name: disabled anchor waits five minutes and suppresses secondary alerts
+    interval: 1m
+    input_series:
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="disabled"}'
+        values: '0+0x10 1+0x5'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod",instance="disabled"}'
+        values: '4000+0x10 0+0x5'
+      - series: 'aegis_intake_audit_anchor_errors_total{job="aegis-intake-prod",instance="disabled"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AegisAuditAnchorDisabled
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: AegisAuditAnchorDisabled
+        exp_alerts:
+          - exp_labels:
+              job: aegis-intake-prod
+              instance: disabled
+              severity: critical
+            exp_annotations:
+              summary: Checkpoint audit anchoring is disabled
+              runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
+      - eval_time: 10m
+        alertname: AegisAuditAnchorLagging
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AegisAuditAnchorErrors
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: AegisAuditAnchorDisabled
+        exp_alerts: []
+  - name: sustained lag fires and clears after successful anchoring
+    interval: 1m
+    input_series:
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="lagging"}'
+        values: '1+0x15'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod",instance="lagging"}'
+        values: '3601+0x10 0+0x5'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod",instance="other"}'
+        values: '4000+0x15'
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="other"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AegisAuditAnchorLagging
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: AegisAuditAnchorLagging
+        exp_alerts:
+          - exp_labels:
+              job: aegis-intake-prod
+              instance: lagging
+              severity: critical
+            exp_annotations:
+              summary: Audit checkpoint lag exceeds one hour
+              runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
+      - eval_time: 11m
+        alertname: AegisAuditAnchorLagging
+        exp_alerts: []
+  - name: upload error fires then expires from the window
+    interval: 1m
+    input_series:
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="errors"}'
+        values: '1+0x30'
+      - series: 'aegis_intake_audit_anchor_errors_total{job="aegis-intake-prod",instance="errors"}'
+        values: '0 1+0x29'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AegisAuditAnchorErrors
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AegisAuditAnchorErrors
+        exp_alerts:
+          - exp_labels:
+              job: aegis-intake-prod
+              instance: errors
+              severity: warning
+            exp_annotations:
+              summary: Audit checkpoint upload errors detected
+              runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
+      - eval_time: 20m
+        alertname: AegisAuditAnchorErrors
+        exp_alerts: []
+  - name: idle chain threshold boundary counter reset and staging stay quiet
+    interval: 1m
+    input_series:
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="healthy"}'
+        values: '1+0x30'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod",instance="healthy"}'
+        values: '3600+0x30'
+      - series: 'aegis_intake_audit_anchor_errors_total{job="aegis-intake-prod",instance="healthy"}'
+        values: '100+0x10 0+0x19'
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-prod",instance="idle"}'
+        values: '1+0x30'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod",instance="idle"}'
+        values: '0+0x30'
+      - series: 'aegis_intake_audit_anchor_errors_total{job="aegis-intake-prod",instance="idle"}'
+        values: '0+0x30'
+      - series: 'aegis_intake_audit_anchor_last_success_timestamp_seconds{job="aegis-intake-prod",instance="idle"}'
+        values: '0+0x30'
+      - series: 'aegis_intake_audit_anchor_enabled{job="aegis-intake-staging",instance="staging"}'
+        values: '0+0x30'
+      - series: 'aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-staging",instance="staging"}'
+        values: '4000+0x30'
+      - series: 'aegis_intake_audit_anchor_errors_total{job="aegis-intake-staging",instance="staging"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AegisAuditAnchorDisabled
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AegisAuditAnchorLagging
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AegisAuditAnchorErrors
+        exp_alerts: []

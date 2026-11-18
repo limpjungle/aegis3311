@@ -346,7 +346,7 @@ aegis_sessions_by_state:
            "prefix": "prod/", "path_style": true, "retention": "8760h", "timeout": "10s"}}}
 ```
 
-4. Алерты: `aegis_intake_audit_anchor_enabled == 0` (anchor выключен), `aegis_intake_audit_anchor_lag_seconds > 3600` (синхронно с `max_lag`), `rate(aegis_intake_audit_anchor_errors_total[15m]) > 0`, давность `aegis_intake_audit_anchor_last_success_timestamp_seconds`.
+4. Подключите [правила и инструкцию Prometheus](../../deploy/monitoring/README.md) для prod-intake с обязательным anchor. Они обнаруживают выключенную выгрузку, отставание больше часа (синхронно с `max_lag: 1h`) и ошибки выгрузки за 15 минут; каждое условие должно сохраняться 5 минут. Отдельно настройте внешний контроль доступности `/metrics` и наличия ожидаемых targets. Нулевая давность успешной фиксации при пустой цепочке сама по себе не вызывает алерт.
 5. Проверка: `aegis-audit checkpoint ... -anchor-config FILE`, затем `aegis-audit verify ... -id CHAIN_ID -anchor-config FILE` (в выводе `checkpoints_checked`). Те же `AEGIS_AUDIT_S3_*` в окружении.
 6. Не проверено на живом Yandex Object Storage: per-object lock-заголовки без default retention, lock-заголовки в ответе GET, точный XML `?versions` — проверить до включения в shadow.
 

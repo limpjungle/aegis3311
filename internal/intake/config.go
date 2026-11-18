@@ -77,11 +77,12 @@ type Config struct {
 	Metrics           []MetricSpec        `json:"metrics"`
 	DBQueries         map[string]string   `json:"db_queries"`
 	KillSwitch        *KillSwitchConfig   `json:"kill_switch"`    // обязателен: без него intake не запускается
-	PolicyBundle      *PolicyBundleConfig `json:"policy_bundle"`  // необязательна: проверка подписанного policy bundle (T-24)
+	PolicyBundle      *PolicyBundleConfig `json:"policy_bundle"`  // проверка подписанного policy bundle (T-24); необязательна только для staging, в prod-окружениях обязательна с required=true
 	MetricsListen     string              `json:"metrics_listen"` // адрес /metrics и /healthz (host:port); пусто — выключено; только serve
 }
 
-// PolicyBundleConfig — проверка подписанного policy bundle при старте (serve и replay без -prepare-only). Секции нет —
+// PolicyBundleConfig — проверка подписанного policy bundle при старте (serve и replay без -prepare-only). В prod-окружениях
+// (bundleRequiredEnvs) секция обязательна и required должен быть true (код 2 как ошибка конфигурации). В staging: секции нет —
 // проверка выключена (предупреждение policy_bundle_missing). Секция есть и required=false — bundle проверяется полностью,
 // но отказ только предупреждает (policy_bundle_unverified). required=true — отказ проверки — код 2 до приёма инцидентов.
 // Ключи подписи bundle не должны совпадать с ключом аудита и ключами kill switch (код 2 независимо от required).
@@ -541,10 +542,17 @@ func (c Config) validateKillSwitch() error {
 // bundleIssuerRe — допустимый issuer ключа подписи bundle (как у ключей kill switch).
 var bundleIssuerRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$`)
 
-// validatePolicyBundle: секция необязательна; если есть — абсолютные пути, хотя бы один ключ, корректные issuer'ы и
+// bundleRequiredEnvs — окружения, где секция policy_bundle обязательна и required=true (T-24, stage-0a-status п. 3).
+// Staging сохраняет двухшаговое включение (required=false, затем true).
+var bundleRequiredEnvs = map[string]bool{"prod-cloud-hybrid": true, "prod-baremetal": true}
+
+// validatePolicyBundle: секция необязательна только вне prod-окружений; если есть — абсолютные пути, хотя бы один ключ, корректные issuer'ы и
 // непересечение ключей bundle с ключами kill switch и ключом аудита (последний сверяет intake при старте: здесь файлов нет).
 func (c Config) validatePolicyBundle() error {
 	p := c.PolicyBundle
+	if bundleRequiredEnvs[c.Environment] && (p == nil || !p.Required) {
+		return fmt.Errorf("конфигурация intake: policy_bundle: в окружении %s секция обязательна и required должен быть true (T-24)", c.Environment)
+	}
 	if p == nil {
 		return nil
 	}

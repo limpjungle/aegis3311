@@ -40,6 +40,9 @@ promtool check rules deploy/monitoring/audit-anchor.rules.yml
 promtool test rules deploy/monitoring/audit-anchor.test.yml
 ```
 
+CI выполняет обе проверки в обязательном job `go` с `promtool 3.16.0`.
+Перед извлечением инструмента проверяется закреплённая SHA-256 архива.
+
 После подключения проверьте загрузку группы в Prometheus и доставку тестового
 уведомления дежурному. Результат проверки на целевом стенде внесите в статус
 этапа 0a.

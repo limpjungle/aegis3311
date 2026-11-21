@@ -28,6 +28,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Проверка правил мониторинга аудита
+        run: |
+          tool_dir="$(mktemp -d "$RUNNER_TEMP/aegis-promtool.XXXXXX")"
+          archive="$tool_dir/prometheus.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 --max-time 120 \
+            https://github.com/prometheus/prometheus/releases/download/v3.16.0/prometheus-3.16.0.linux-amd64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            68727009472a2c02e1ff7f062fd5b3e637285bffc8fc2d340c76fb449d6e0f34 "$archive" \
+            | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$tool_dir" --strip-components=1 \
+            prometheus-3.16.0.linux-amd64/promtool
+          "$tool_dir/promtool" check rules deploy/monitoring/audit-anchor.rules.yml
+          "$tool_dir/promtool" test rules deploy/monitoring/audit-anchor.test.yml
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

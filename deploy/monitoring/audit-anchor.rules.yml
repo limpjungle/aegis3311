@@ -1,0 +1,32 @@
+groups:
+  - name: aegis-intake-audit-anchor
+    interval: 1m
+    rules:
+      - alert: AegisAuditAnchorDisabled
+        expr: aegis_intake_audit_anchor_enabled{job="aegis-intake-prod"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Checkpoint audit anchoring is disabled
+          runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
+      - alert: AegisAuditAnchorLagging
+        expr: >-
+          (aegis_intake_audit_anchor_lag_seconds{job="aegis-intake-prod"} > 3600)
+          and (aegis_intake_audit_anchor_enabled{job="aegis-intake-prod"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Audit checkpoint lag exceeds one hour
+          runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
+      - alert: AegisAuditAnchorErrors
+        expr: >-
+          (increase(aegis_intake_audit_anchor_errors_total{job="aegis-intake-prod"}[15m]) > 0)
+          and (aegis_intake_audit_anchor_enabled{job="aegis-intake-prod"} == 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Audit checkpoint upload errors detected
+          runbook_url: https://github.com/limpjungle/aegis3311/blob/main/docs/04-operations/intake-deploy.md
